@@ -1,0 +1,28 @@
+{
+  "results": [
+    {
+      "name": "Radiohead",
+      "entity_id": "70CAE5BF-2F4C-445C-A3E5-4EDACFC3591C",
+      "types": [
+        "urn:entity:artist"
+      ],
+      "disambiguation": "Radiohead"
+    },
+    {
+      "name": "Radiohead",
+      "entity_id": "70CAE5BF-2F4C-445C-A3E5-4EDACFC3591C",
+      "types": [
+        "urn:entity:person"
+      ],
+      "disambiguation": ""
+    },
+    {
+      "name": "Radiohead",
+      "entity_id": "B48A4E4B-5448-44CB-A2BE-58108E3C26A2",
+      "types": [
+        "urn:entity:album"
+      ],
+      "disambiguation": "Radiohead"
+    }
+  ]
+}

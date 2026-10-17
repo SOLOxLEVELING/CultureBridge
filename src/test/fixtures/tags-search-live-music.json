@@ -1,0 +1,67 @@
+{
+  "results": {
+    "tags": [
+      {
+        "id": "urn:tag:good_for:qloo:live_music",
+        "name": "Live Music",
+        "type": "urn:tag:good_for:qloo",
+        "popularity": 0.99828565,
+        "parents": [
+          {
+            "type": "urn:entity:place"
+          }
+        ]
+      },
+      {
+        "id": "urn:tag:amenity:qloo:live_music",
+        "name": "Live Music",
+        "type": "urn:tag:amenity:qloo",
+        "popularity": 0.99750376,
+        "parents": [
+          {
+            "type": "urn:entity:place"
+          }
+        ]
+      },
+      {
+        "id": "urn:tag:ambience:qloo:live_music",
+        "name": "Live Music",
+        "type": "urn:tag:ambience:qloo",
+        "popularity": 0.93568695,
+        "parents": [
+          {
+            "type": "urn:entity:place"
+          }
+        ]
+      },
+      {
+        "id": "urn:tag:keyword:qloo:live_music",
+        "name": "Live music",
+        "type": "urn:tag:keyword:qloo",
+        "popularity": 0.6617803,
+        "parents": [
+          {
+            "type": "urn:entity:tv_show"
+          },
+          {
+            "type": "urn:entity:podcast"
+          },
+          {
+            "type": "urn:entity:movie"
+          }
+        ]
+      },
+      {
+        "id": "urn:tag:category:place:live_music_venue",
+        "name": "Live music venue",
+        "type": "urn:tag:category:place",
+        "popularity": 0.99936235,
+        "parents": [
+          {
+            "type": "urn:entity:place"
+          }
+        ]
+      }
+    ]
+  }
+}

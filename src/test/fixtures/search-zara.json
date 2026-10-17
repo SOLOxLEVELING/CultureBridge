@@ -1,0 +1,28 @@
+{
+  "results": [
+    {
+      "name": "Zara",
+      "entity_id": "74A44B01-5C99-4754-9585-F487D21C543D",
+      "types": [
+        "urn:entity:brand"
+      ],
+      "disambiguation": ""
+    },
+    {
+      "name": "Zara",
+      "entity_id": "743122E4-EAAE-43ED-9403-F8B3199EF5DF",
+      "types": [
+        "urn:entity:place"
+      ],
+      "disambiguation": "Nevsky Ave, 21 St Petersburg Russia 191186"
+    },
+    {
+      "name": "Zara",
+      "entity_id": "8474F6E3-8F27-4641-8317-379E920B8BD5",
+      "types": [
+        "urn:entity:place"
+      ],
+      "disambiguation": "Av. del Im\u00e1n No. 151-Loc. 82 Pedregal de Carrasco, Tlalpan 04700 Ciudad de M\u00e9xico, CDMX Mexico"
+    }
+  ]
+}

@@ -1,0 +1,28 @@
+{
+  "results": [
+    {
+      "name": "Arijit Singh",
+      "entity_id": "549B1B26-01A6-45A7-90C2-EF559A34D8E6",
+      "types": [
+        "urn:entity:person"
+      ],
+      "disambiguation": "1987-04-25"
+    },
+    {
+      "name": "Arijit Singh",
+      "entity_id": "924C8504-4BD8-4615-AB2D-1C16880A8A62",
+      "types": [
+        "urn:entity:artist"
+      ],
+      "disambiguation": "Arijit Singh"
+    },
+    {
+      "name": "Best Of Arijit Singh",
+      "entity_id": "7FABF092-C356-4678-8A98-984CF6EBBF8F",
+      "types": [
+        "urn:entity:album"
+      ],
+      "disambiguation": "Best Of Arijit Singh"
+    }
+  ]
+}

@@ -1,0 +1,28 @@
+{
+  "results": [
+    {
+      "name": "The Office",
+      "entity_id": "E5AE1F26-04CB-4CDD-BBA4-87FB6541F848",
+      "types": [
+        "urn:entity:tv_show"
+      ],
+      "disambiguation": "2005,2013"
+    },
+    {
+      "name": "The Office",
+      "entity_id": "7C2ECF3A-BDD2-49BB-84CF-2FC048F7C797",
+      "types": [
+        "urn:entity:tv_show"
+      ],
+      "disambiguation": "2001,2003"
+    },
+    {
+      "name": "The Office",
+      "entity_id": "E98829B5-A1CE-4677-890C-CF8302C65AEF",
+      "types": [
+        "urn:entity:artist"
+      ],
+      "disambiguation": "The Office"
+    }
+  ]
+}

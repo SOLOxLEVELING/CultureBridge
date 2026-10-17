@@ -1,0 +1,135 @@
+{
+  "results": {
+    "entities": [
+      {
+        "name": "Steel Vintage Bikes Caf\u00e9",
+        "entity_id": "C60A48C1-3F3B-4077-9186-B4E58620D0C4",
+        "properties": {
+          "is_closed": false,
+          "website": "https://www.thebikecafe.de/",
+          "neighborhood": "Mitte"
+        },
+        "location": {
+          "lat": 52.5127147,
+          "lon": 13.3822253
+        },
+        "tags": [
+          {
+            "id": "urn:tag:category:place:cafe",
+            "name": "Cafe",
+            "type": "urn:tag:category:place"
+          },
+          {
+            "id": "urn:tag:category:place:breakfast_restaurant",
+            "name": "Breakfast restaurant",
+            "type": "urn:tag:category:place"
+          },
+          {
+            "id": "urn:tag:category:place:brunch_restaurant",
+            "name": "Brunch restaurant",
+            "type": "urn:tag:category:place"
+          },
+          {
+            "id": "urn:tag:category:place:restaurant",
+            "name": "Restaurant",
+            "type": "urn:tag:category:place"
+          }
+        ],
+        "query": {
+          "affinity": 0.9064007486062361,
+          "explainability": {
+            "signal.interests.entities": [
+              {
+                "entity_id": "74A44B01-5C99-4754-9585-F487D21C543D",
+                "score": 0.2975116122704182
+              },
+              {
+                "entity_id": "70CAE5BF-2F4C-445C-A3E5-4EDACFC3591C",
+                "score": 0.289290437788565
+              },
+              {
+                "entity_id": "E5AE1F26-04CB-4CDD-BBA4-87FB6541F848",
+                "score": 0.22156420982009234
+              },
+              {
+                "entity_id": "549B1B26-01A6-45A7-90C2-EF559A34D8E6",
+                "score": 0.19163374012092443
+              }
+            ]
+          }
+        }
+      },
+      {
+        "name": "Hotel Catalonia Berlin Mitte",
+        "entity_id": "99D08EDA-853A-4728-9A1F-60CAC1EC1DA1",
+        "properties": {
+          "is_closed": false,
+          "hotel_class": 4,
+          "star_rating": 4,
+          "number_of_rooms": 131,
+          "check_in_time": "15:00",
+          "website": "https://www.cataloniahotels.com/en/hotel/catalonia-berlin-mitte?mb=1&utm_source=googlemaps&utm_medium=organic&utm_campaign=BMI",
+          "neighborhood": "Mitte"
+        },
+        "location": {
+          "lat": 52.5113243,
+          "lon": 13.415704
+        },
+        "tags": [
+          {
+            "id": "urn:tag:category:place:hotel",
+            "name": "Hotel",
+            "type": "urn:tag:category:place"
+          }
+        ],
+        "query": {
+          "affinity": 0.7316151800824845,
+          "explainability": {
+            "signal.interests.entities": [
+              {
+                "entity_id": "924C8504-4BD8-4615-AB2D-1C16880A8A62",
+                "score": 1
+              }
+            ]
+          }
+        }
+      },
+      {
+        "name": "Chutnify",
+        "entity_id": "01021321-C896-451B-956F-EE19F67010DF",
+        "properties": {
+          "is_closed": false,
+          "website": "http://www.chutnify.com/",
+          "neighborhood": "Prenzlauer Berg"
+        },
+        "location": {
+          "lat": 52.5384433,
+          "lon": 13.4188833
+        },
+        "tags": [
+          {
+            "id": "urn:tag:category:place:indian_restaurant",
+            "name": "Indian restaurant",
+            "type": "urn:tag:category:place"
+          },
+          {
+            "id": "urn:tag:category:place:restaurant",
+            "name": "Restaurant",
+            "type": "urn:tag:category:place"
+          }
+        ],
+        "query": {
+          "affinity": 0.7185307927353338,
+          "explainability": {
+            "signal.interests.entities": [
+              {
+                "entity_id": "924C8504-4BD8-4615-AB2D-1C16880A8A62",
+                "score": 1
+              }
+            ]
+          }
+        }
+      }
+    ]
+  }
+}
