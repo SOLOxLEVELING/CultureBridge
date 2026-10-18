@@ -1,0 +1,215 @@
+{
+  "_comment": "Real Qloo data for validator tests. Extracted from test fixtures.",
+  "entities": [
+    {
+      "name": "Huxleys Neue Welt",
+      "entity_id": "9C1E75AD-7CCE-46A7-84B0-1C2DC18EA634",
+      "properties": {
+        "is_closed": false,
+        "website": "https://huxleysneuewelt.com/",
+        "neighborhood": "Neuk\u00f6lln"
+      },
+      "location": {
+        "lat": 52.486418199999996,
+        "lon": 13.421531
+      },
+      "tags": [
+        {
+          "id": "urn:tag:category:place:event_venue",
+          "name": "Event venue",
+          "type": "urn:tag:category:place"
+        },
+        {
+          "id": "urn:tag:category:place:live_music_venue",
+          "name": "Live music venue",
+          "type": "urn:tag:category:place"
+        },
+        {
+          "id": "urn:tag:category:place:concert_hall",
+          "name": "Concert hall",
+          "type": "urn:tag:category:place"
+        }
+      ]
+    },
+    {
+      "name": "Tresor Berlin I Club & label",
+      "entity_id": "281A1BCC-9624-41E9-A811-3BAFCD574041",
+      "properties": {
+        "is_closed": false,
+        "website": "https://www.tresorberlin.com/",
+        "neighborhood": "Mitte"
+      },
+      "location": {
+        "lat": 52.5107462,
+        "lon": 13.419339599999999
+      },
+      "tags": [
+        {
+          "id": "urn:tag:category:place:night_club",
+          "name": "Night club",
+          "type": "urn:tag:category:place"
+        },
+        {
+          "id": "urn:tag:category:place:dance_club",
+          "name": "Dance club",
+          "type": "urn:tag:category:place"
+        },
+        {
+          "id": "urn:tag:category:place:live_music_venue",
+          "name": "Live music venue",
+          "type": "urn:tag:category:place"
+        }
+      ]
+    },
+    {
+      "name": "Coretex Records",
+      "entity_id": "8FEA36BD-0719-4309-94A3-931CED855498",
+      "properties": {
+        "is_closed": false,
+        "website": "https://coretexrecords.com/",
+        "neighborhood": "Kreuzberg"
+      },
+      "location": {
+        "lat": 52.4996857,
+        "lon": 13.4256405
+      },
+      "tags": [
+        {
+          "id": "urn:tag:category:place:music_store",
+          "name": "Music store",
+          "type": "urn:tag:category:place"
+        },
+        {
+          "id": "urn:tag:category:place:record_store",
+          "name": "Record store",
+          "type": "urn:tag:category:place"
+        },
+        {
+          "id": "urn:tag:category:place:event_ticket_seller",
+          "name": "Event ticket seller",
+          "type": "urn:tag:category:place"
+        },
+        {
+          "id": "urn:tag:category:place:t_shirt_store",
+          "name": "T shirt store",
+          "type": "urn:tag:category:place"
+        },
+        {
+          "id": "urn:tag:category:place:clothing_store",
+          "name": "Clothing store",
+          "type": "urn:tag:category:place"
+        },
+        {
+          "id": "urn:tag:category:place:souvenir_store",
+          "name": "Souvenir store",
+          "type": "urn:tag:category:place"
+        }
+      ]
+    },
+    {
+      "name": "Motif Wein",
+      "entity_id": "18B19051-ECD7-460B-A026-9193330EED08",
+      "properties": {
+        "is_closed": false,
+        "website": "https://motif.wine/",
+        "neighborhood": "Neuk\u00f6lln"
+      },
+      "location": {
+        "lat": 52.486314799999995,
+        "lon": 13.435174499999999
+      },
+      "tags": [
+        {
+          "id": "urn:tag:category:place:wine_store",
+          "name": "Wine store",
+          "type": "urn:tag:category:place"
+        },
+        {
+          "id": "urn:tag:category:place:wine_bar",
+          "name": "Wine bar",
+          "type": "urn:tag:category:place"
+        },
+        {
+          "id": "urn:tag:category:place:record_store",
+          "name": "Record store",
+          "type": "urn:tag:category:place"
+        }
+      ]
+    },
+    {
+      "name": "ESHK Friseur Moabit",
+      "entity_id": "E40923DC-80C3-4B06-911C-9EB14D20A0D7",
+      "properties": {
+        "is_closed": false,
+        "website": "https://www.eshk-hair.com/salons/berlin-friseur-moabit/",
+        "neighborhood": "Moabit"
+      },
+      "location": {
+        "lat": 52.529987299999995,
+        "lon": 13.342973299999999
+      },
+      "tags": [
+        {
+          "id": "urn:tag:category:place:hair_salon",
+          "name": "Hair salon",
+          "type": "urn:tag:category:place"
+        },
+        {
+          "id": "urn:tag:category:place:record_store",
+          "name": "Record store",
+          "type": "urn:tag:category:place"
+        },
+        {
+          "id": "urn:tag:category:place:hairdresser",
+          "name": "Hairdresser",
+          "type": "urn:tag:category:place"
+        }
+      ]
+    },
+    {
+      "name": "Toronto Pearson International Airport",
+      "entity_id": "8E6575DF-E17A-41AC-B553-C3FD209AD7BE",
+      "properties": {
+        "is_closed": false,
+        "website": "https://www.torontopearson.com/en?utm_medium=google&utm_source=businessprofile",
+        "neighborhood": "Mississauga"
+      },
+      "location": {
+        "lat": 43.6798345,
+        "lon": -79.62838339999999
+      },
+      "tags": [
+        {
+          "id": "urn:tag:category:place:airport",
+          "name": "Airport",
+          "type": "urn:tag:category:place"
+        },
+        {
+          "id": "urn:tag:category:place:international_airport",
+          "name": "International airport",
+          "type": "urn:tag:category:place"
+        }
+      ]
+    },
+    {
+      "name": "Dundas Station",
+      "entity_id": "62B2B711-9311-4095-8E92-8A70717D7551",
+      "properties": {
+        "is_closed": false,
+        "website": "http://www.ttc.ca/Subway/Stations/Dundas/station.jsp",
+        "neighborhood": "Toronto Centre"
+      },
+      "location": {
+        "lat": 43.6562811,
+        "lon": -79.380459
+      },
+      "tags": [
+        {
+          "id": "urn:tag:category:place:subway_station",
+          "name": "Subway station",
+          "type": "urn:tag:category:place"
+        }
+      ]
+    }
+  ]
+}
