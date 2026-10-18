@@ -7,6 +7,9 @@ export {
 } from "./client";
 export type { QlooCallMeta, QlooResult, InsightsParams } from "./client";
 
+export { resolveEntityFromResults } from "./resolver";
+export type { ResolvedEntity, ResolveResult } from "./resolver";
+
 export type {
   SearchEntity,
   SearchResponse,
