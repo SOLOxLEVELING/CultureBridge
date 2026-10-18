@@ -1,0 +1,125 @@
+{
+  "_comment": "Simulated discovery query results for provenance and merge testing. ENT-A: anchor-1 + blended. ENT-B: anchor-1 + anchor-2 + blended. ENT-C: anchor-2 only. ENT-D: blended only. ENT-E: hotel (rejected). ENT-F: airport (rejected).",
+  "anchors": [
+    { "entityId": "ANCHOR-1", "name": "Test Artist Alpha" },
+    { "entityId": "ANCHOR-2", "name": "Test Artist Beta" }
+  ],
+  "city": "Berlin",
+  "responses": {
+    "anchor:ANCHOR-1": {
+      "results": {
+        "entities": [
+          {
+            "name": "Cafe Mitte",
+            "entity_id": "ENT-A",
+            "properties": { "is_closed": false },
+            "location": { "lat": 52.52, "lon": 13.38 },
+            "tags": [
+              { "id": "urn:tag:category:place:cafe", "name": "Cafe", "type": "urn:tag:category:place" },
+              { "id": "urn:tag:category:place:breakfast_restaurant", "name": "Breakfast restaurant", "type": "urn:tag:category:place" }
+            ],
+            "query": { "affinity": 0.92 }
+          },
+          {
+            "name": "Curry Corner",
+            "entity_id": "ENT-B",
+            "properties": { "is_closed": false },
+            "location": { "lat": 52.53, "lon": 13.39 },
+            "tags": [
+              { "id": "urn:tag:category:place:restaurant", "name": "Restaurant", "type": "urn:tag:category:place" },
+              { "id": "urn:tag:category:place:indian_restaurant", "name": "Indian restaurant", "type": "urn:tag:category:place" }
+            ],
+            "query": { "affinity": 0.85 }
+          },
+          {
+            "name": "Hotel Testington",
+            "entity_id": "ENT-E",
+            "properties": { "is_closed": false, "hotel_class": 4, "star_rating": 4, "number_of_rooms": 200, "check_in_time": "15:00" },
+            "location": { "lat": 52.51, "lon": 13.40 },
+            "tags": [
+              { "id": "urn:tag:category:place:hotel", "name": "Hotel", "type": "urn:tag:category:place" }
+            ],
+            "query": { "affinity": 0.80 }
+          }
+        ]
+      }
+    },
+    "anchor:ANCHOR-2": {
+      "results": {
+        "entities": [
+          {
+            "name": "Curry Corner",
+            "entity_id": "ENT-B",
+            "properties": { "is_closed": false },
+            "location": { "lat": 52.53, "lon": 13.39 },
+            "tags": [
+              { "id": "urn:tag:category:place:restaurant", "name": "Restaurant", "type": "urn:tag:category:place" },
+              { "id": "urn:tag:category:place:indian_restaurant", "name": "Indian restaurant", "type": "urn:tag:category:place" }
+            ],
+            "query": { "affinity": 0.88 }
+          },
+          {
+            "name": "Vinyl Dreams",
+            "entity_id": "ENT-C",
+            "properties": { "is_closed": false },
+            "location": { "lat": 52.50, "lon": 13.42 },
+            "tags": [
+              { "id": "urn:tag:category:place:record_store", "name": "Record store", "type": "urn:tag:category:place" },
+              { "id": "urn:tag:category:place:music_store", "name": "Music store", "type": "urn:tag:category:place" }
+            ],
+            "query": { "affinity": 0.82 }
+          }
+        ]
+      }
+    },
+    "blended": {
+      "results": {
+        "entities": [
+          {
+            "name": "Cafe Mitte",
+            "entity_id": "ENT-A",
+            "properties": { "is_closed": false },
+            "location": { "lat": 52.52, "lon": 13.38 },
+            "tags": [
+              { "id": "urn:tag:category:place:cafe", "name": "Cafe", "type": "urn:tag:category:place" },
+              { "id": "urn:tag:category:place:breakfast_restaurant", "name": "Breakfast restaurant", "type": "urn:tag:category:place" }
+            ],
+            "query": { "affinity": 0.90 }
+          },
+          {
+            "name": "Curry Corner",
+            "entity_id": "ENT-B",
+            "properties": { "is_closed": false },
+            "location": { "lat": 52.53, "lon": 13.39 },
+            "tags": [
+              { "id": "urn:tag:category:place:restaurant", "name": "Restaurant", "type": "urn:tag:category:place" },
+              { "id": "urn:tag:category:place:indian_restaurant", "name": "Indian restaurant", "type": "urn:tag:category:place" }
+            ],
+            "query": { "affinity": 0.87 }
+          },
+          {
+            "name": "Nachtklub Berlin",
+            "entity_id": "ENT-D",
+            "properties": { "is_closed": false },
+            "location": { "lat": 52.511, "lon": 13.419 },
+            "tags": [
+              { "id": "urn:tag:category:place:night_club", "name": "Night club", "type": "urn:tag:category:place" },
+              { "id": "urn:tag:category:place:dance_club", "name": "Dance club", "type": "urn:tag:category:place" }
+            ],
+            "query": { "affinity": 0.78 }
+          },
+          {
+            "name": "Test Airport",
+            "entity_id": "ENT-F",
+            "properties": { "is_closed": false },
+            "location": { "lat": 52.36, "lon": 13.51 },
+            "tags": [
+              { "id": "urn:tag:category:place:airport", "name": "Airport", "type": "urn:tag:category:place" }
+            ],
+            "query": { "affinity": 0.70 }
+          }
+        ]
+      }
+    }
+  }
+}
