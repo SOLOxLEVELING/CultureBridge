@@ -341,6 +341,54 @@ describe("runAgent — tool call limit", () => {
     const blocked = result.trace.filter((e) => e.status === "budget_blocked");
     assert.equal(blocked.length, 1);
   });
+
+  it("counts trust-blocked discover_places calls toward the 12-call limit", async () => {
+    const responses: ConverseOutput[] = [];
+    for (let i = 0; i < 6; i++) {
+      responses.push(makeOutput([
+        toolUse(`a${i}`, "discover_places", { anchor_ids: ["R-1"], anchor_names: ["R"], city: "Tokyo" }),
+        toolUse(`b${i}`, "discover_places", { anchor_ids: ["R-1"], anchor_names: ["R"], city: "Tokyo" }),
+      ]));
+    }
+    responses.push(makeOutput([
+      toolUse("fin", "finalize", { summary: "Done.", recommendation_ids: [] }),
+    ]));
+
+    const result = await runAgent(
+      { city: "Berlin", anchors: [], confirmedAnchors: [{ entityId: "R-1", name: "Radiohead" }] },
+      { converse: scriptedConverse(responses), dispatchToolCall: passthroughDispatch({}) },
+    );
+
+    assert.equal(result.status, "call_limit_reached");
+    assert.equal(result.toolCallCount, TOOL_CALL_LIMIT);
+    const cityBlocks = result.trace.filter((e) => e.status === "city_mismatch");
+    assert.equal(cityBlocks.length, 12);
+    const budgetBlocked = result.trace.filter((e) => e.status === "budget_blocked");
+    assert.ok(budgetBlocked.length > 0);
+  });
+
+  it("counts untrusted-anchor rejections toward the 12-call limit", async () => {
+    const responses: ConverseOutput[] = [];
+    for (let i = 0; i < 6; i++) {
+      responses.push(makeOutput([
+        toolUse(`a${i}`, "discover_places", { anchor_ids: ["FAKE"], anchor_names: ["?"], city: "Berlin" }),
+        toolUse(`b${i}`, "discover_places", { anchor_ids: ["FAKE"], anchor_names: ["?"], city: "Berlin" }),
+      ]));
+    }
+    responses.push(makeOutput([
+      toolUse("fin", "finalize", { summary: "Done.", recommendation_ids: [] }),
+    ]));
+
+    const result = await runAgent(DEFAULT_INPUT, {
+      converse: scriptedConverse(responses),
+      dispatchToolCall: passthroughDispatch({}),
+    });
+
+    assert.equal(result.status, "call_limit_reached");
+    assert.equal(result.toolCallCount, TOOL_CALL_LIMIT);
+    const anchorBlocks = result.trace.filter((e) => e.status === "untrusted_anchor");
+    assert.equal(anchorBlocks.length, 12);
+  });
 });
 
 describe("runAgent — timeouts", () => {
@@ -385,6 +433,88 @@ describe("runAgent — timeouts", () => {
     const result = await runAgent(DEFAULT_INPUT, { converse, dispatchToolCall: slowDispatch });
 
     assert.equal(result.status, "completed");
+  });
+
+  it("terminates dispatch that exceeds per-operation timeout", async () => {
+    const converse = scriptedConverse([
+      makeOutput([toolUse("c1", "resolve_anchor", { query: "T", type: "urn:entity:artist" })]),
+      makeOutput([toolUse("c2", "finalize", { summary: "Done.", recommendation_ids: [] })]),
+    ]);
+
+    const slowResolve = async (
+      name: string, input: unknown, _deps?: ToolDeps,
+    ): Promise<ToolExecutionOutcome> => {
+      if (name === "resolve_anchor") {
+        await new Promise((r) => setTimeout(r, 300));
+        return RESOLVED_RADIOHEAD;
+      }
+      const inp = input as { summary: string; recommendation_ids: string[] };
+      return makeFinalizeOutcome(inp.recommendation_ids);
+    };
+
+    const result = await runAgent(DEFAULT_INPUT, {
+      converse,
+      dispatchToolCall: slowResolve,
+      operationTimeoutMs: 50,
+      totalRunTimeoutMs: 10_000,
+    });
+
+    assert.equal(result.status, "completed");
+    const timeouts = result.trace.filter((e) => e.status === "timeout" && e.type === "tool_dispatch");
+    assert.equal(timeouts.length, 1);
+    assert.equal(timeouts[0].toolName, "resolve_anchor");
+  });
+
+  it("terminates with total_timeout when run deadline expires", async () => {
+    const converse = async (): Promise<ConverseOutput> => {
+      await new Promise((r) => setTimeout(r, 300));
+      return makeOutput([toolUse("c1", "resolve_anchor", { query: "T", type: "urn:entity:artist" })]);
+    };
+
+    const result = await runAgent(DEFAULT_INPUT, {
+      converse,
+      dispatchToolCall: scriptedDispatch([]),
+      totalRunTimeoutMs: 50,
+    });
+
+    assert.equal(result.status, "total_timeout");
+    assert.ok(result.trace.some((e) => e.terminationReason === "total_timeout"));
+  });
+
+  it("does not create unhandled promise rejections on dispatch timeout", async () => {
+    let unhandled = false;
+    const handler = () => { unhandled = true; };
+    process.on("unhandledRejection", handler);
+
+    try {
+      const converse = scriptedConverse([
+        makeOutput([toolUse("c1", "resolve_anchor", { query: "T", type: "urn:entity:artist" })]),
+        makeOutput([toolUse("c2", "finalize", { summary: "Done.", recommendation_ids: [] })]),
+      ]);
+
+      const rejectingDispatch = async (
+        name: string, input: unknown, _deps?: ToolDeps,
+      ): Promise<ToolExecutionOutcome> => {
+        if (name === "resolve_anchor") {
+          await new Promise((r) => setTimeout(r, 300));
+          throw new Error("Late rejection after timeout");
+        }
+        const inp = input as { summary: string; recommendation_ids: string[] };
+        return makeFinalizeOutcome(inp.recommendation_ids);
+      };
+
+      await runAgent(DEFAULT_INPUT, {
+        converse,
+        dispatchToolCall: rejectingDispatch,
+        operationTimeoutMs: 50,
+        totalRunTimeoutMs: 10_000,
+      });
+
+      await new Promise((r) => setTimeout(r, 500));
+      assert.equal(unhandled, false, "No unhandled promise rejections");
+    } finally {
+      process.removeListener("unhandledRejection", handler);
+    }
   });
 });
 
@@ -813,5 +943,96 @@ describe("runAgent — trace completeness", () => {
     assert.ok(resolveEvent);
     assert.equal(resolveEvent!.toolInput!.query, "Radiohead");
     assert.equal(resolveEvent!.toolInput!.api_key, "[REDACTED]");
+  });
+});
+
+describe("runAgent — abort signal propagation", () => {
+  it("passes AbortSignal to Bedrock converse", async () => {
+    let receivedSignal: AbortSignal | undefined;
+    const converse = async (input: ConverseInput): Promise<ConverseOutput> => {
+      receivedSignal = input.signal;
+      return makeOutput([toolUse("c1", "finalize", { summary: "D.", recommendation_ids: [] })]);
+    };
+
+    await runAgent(DEFAULT_INPUT, {
+      converse,
+      dispatchToolCall: passthroughDispatch({}),
+    });
+
+    assert.ok(receivedSignal instanceof AbortSignal);
+    assert.equal(receivedSignal!.aborted, false);
+  });
+
+  it("passes AbortSignal to tool dispatch", async () => {
+    let receivedSignal: AbortSignal | undefined;
+    const converse = scriptedConverse([
+      makeOutput([toolUse("c1", "resolve_anchor", { query: "T", type: "urn:entity:artist" })]),
+      makeOutput([toolUse("c2", "finalize", { summary: "D.", recommendation_ids: [] })]),
+    ]);
+
+    const trackingDispatch = async (
+      name: string, _input: unknown, _deps?: ToolDeps, signal?: AbortSignal,
+    ): Promise<ToolExecutionOutcome> => {
+      if (name === "resolve_anchor") { receivedSignal = signal; return RESOLVED_RADIOHEAD; }
+      return FINALIZE_EMPTY;
+    };
+
+    await runAgent(DEFAULT_INPUT, { converse, dispatchToolCall: trackingDispatch });
+
+    assert.ok(receivedSignal instanceof AbortSignal);
+    assert.equal(receivedSignal!.aborted, false);
+  });
+
+  it("aborts dispatch signal on per-operation timeout", async () => {
+    let capturedSignal: AbortSignal | undefined;
+    const converse = scriptedConverse([
+      makeOutput([toolUse("c1", "resolve_anchor", { query: "T", type: "urn:entity:artist" })]),
+      makeOutput([toolUse("c2", "finalize", { summary: "D.", recommendation_ids: [] })]),
+    ]);
+
+    const slowDispatch = async (
+      name: string, input: unknown, _deps?: ToolDeps, signal?: AbortSignal,
+    ): Promise<ToolExecutionOutcome> => {
+      if (name === "resolve_anchor") {
+        capturedSignal = signal;
+        return new Promise((resolve) => {
+          const done = () => resolve(RESOLVED_RADIOHEAD);
+          signal?.addEventListener("abort", () => done(), { once: true });
+          setTimeout(done, 500);
+        });
+      }
+      const inp = input as { summary: string; recommendation_ids: string[] };
+      return makeFinalizeOutcome(inp.recommendation_ids);
+    };
+
+    const result = await runAgent(DEFAULT_INPUT, {
+      converse,
+      dispatchToolCall: slowDispatch,
+      operationTimeoutMs: 50,
+      totalRunTimeoutMs: 10_000,
+    });
+
+    assert.equal(result.status, "completed");
+    assert.ok(capturedSignal);
+    assert.equal(capturedSignal!.aborted, true);
+  });
+
+  it("aborts converse signal on total-run timeout", async () => {
+    let capturedSignal: AbortSignal | undefined;
+    const converse = async (input: ConverseInput): Promise<ConverseOutput> => {
+      capturedSignal = input.signal;
+      await new Promise((r) => setTimeout(r, 300));
+      return makeOutput([toolUse("c1", "finalize", { summary: "D.", recommendation_ids: [] })]);
+    };
+
+    const result = await runAgent(DEFAULT_INPUT, {
+      converse,
+      dispatchToolCall: scriptedDispatch([]),
+      totalRunTimeoutMs: 50,
+    });
+
+    assert.equal(result.status, "total_timeout");
+    assert.ok(capturedSignal);
+    assert.equal(capturedSignal!.aborted, true);
   });
 });

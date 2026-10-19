@@ -121,8 +121,11 @@ export interface AgentRunnerDeps {
     toolName: string,
     toolInput: unknown,
     deps?: ToolDeps,
+    signal?: AbortSignal,
   ) => Promise<ToolExecutionOutcome>;
   toolDeps?: ToolDeps;
+  operationTimeoutMs?: number;
+  totalRunTimeoutMs?: number;
 }
 
 const DEFAULT_RUNNER_DEPS: AgentRunnerDeps = {
@@ -132,6 +135,10 @@ const DEFAULT_RUNNER_DEPS: AgentRunnerDeps = {
 
 // ── Budget tracker ─────────────────────────────────────────────
 
+// Tracks logical Qloo API operations, not individual HTTP attempts.
+// The Qloo client retries 5xx/429 internally (MAX_RETRIES=2 → up to 3 attempts
+// per logical call). Budget of 25 outbound → up to 75 HTTP attempts worst case.
+// Cached responses (24h TTL) are tracked separately; not counted as outbound.
 class QlooBudgetTracker {
   outbound = 0;
   cacheHits = 0;
@@ -257,25 +264,35 @@ export class OperationTimeoutError extends Error {
 }
 
 function withTimeout<T>(
-  promise: Promise<T>,
+  startOp: (signal: AbortSignal) => Promise<T>,
   ms: number,
   label: string,
 ): Promise<T> {
+  const ac = new AbortController();
   return new Promise<T>((resolve, reject) => {
     const timer = setTimeout(
-      () => reject(new OperationTimeoutError(label, ms)),
+      () => {
+        ac.abort();
+        reject(new OperationTimeoutError(label, ms));
+      },
       ms,
     );
-    promise.then(
-      (v) => {
-        clearTimeout(timer);
-        resolve(v);
-      },
-      (e) => {
-        clearTimeout(timer);
-        reject(e);
-      },
-    );
+    try {
+      startOp(ac.signal).then(
+        (v) => {
+          clearTimeout(timer);
+          resolve(v);
+        },
+        (e) => {
+          clearTimeout(timer);
+          if (ac.signal.aborted) return;
+          reject(e);
+        },
+      );
+    } catch (e) {
+      clearTimeout(timer);
+      reject(e);
+    }
   });
 }
 
@@ -288,20 +305,20 @@ function createTrackedToolDeps(
   const fi = baseDeps?.fetchInsights ?? realInsights;
 
   return {
-    searchEntity: async (query: string, take?: number) => {
-      const result = await se(query, take);
+    searchEntity: async (query: string, take?: number, signal?: AbortSignal) => {
+      const result = await se(query, take, signal);
       if (result.meta.cached) budget.recordCacheHit();
       else budget.recordOutbound();
       return result;
     },
-    searchTags: async (query: string, take?: number) => {
-      const result = await st(query, take);
+    searchTags: async (query: string, take?: number, signal?: AbortSignal) => {
+      const result = await st(query, take, signal);
       if (result.meta.cached) budget.recordCacheHit();
       else budget.recordOutbound();
       return result;
     },
-    fetchInsights: async (params) => {
-      const result = await fi(params);
+    fetchInsights: async (params, signal?: AbortSignal) => {
+      const result = await fi(params, signal);
       if (result.meta.cached) budget.recordCacheHit();
       else budget.recordOutbound();
       return result;
@@ -320,6 +337,8 @@ export async function runAgent(
   const trace: TraceEvent[] = [];
   let nextEventId = 0;
   const budget = new QlooBudgetTracker(QLOO_REQUEST_BUDGET);
+  const opTimeout = deps.operationTimeoutMs ?? OPERATION_TIMEOUT_MS;
+  const totalTimeout = deps.totalRunTimeoutMs ?? TOTAL_RUN_TIMEOUT_MS;
 
   const trusted: TrustedState = {
     city: input.city,
@@ -354,10 +373,10 @@ export async function runAgent(
     return Date.now() - runStart;
   }
   function remaining(): number {
-    return Math.max(0, TOTAL_RUN_TIMEOUT_MS - elapsed());
+    return Math.max(0, totalTimeout - elapsed());
   }
   function isTimedOut(): boolean {
-    return elapsed() >= TOTAL_RUN_TIMEOUT_MS;
+    return elapsed() >= totalTimeout;
   }
 
   // ── Agent loop ─────────────────────────────────────────────
@@ -380,8 +399,8 @@ export async function runAgent(
     const t0 = Date.now();
     try {
       output = await withTimeout(
-        deps.converse({ system: systemPrompt, messages, tools: toolConfig }),
-        Math.min(OPERATION_TIMEOUT_MS, remaining()),
+        (signal) => deps.converse({ system: systemPrompt, messages, tools: toolConfig, signal }),
+        Math.min(opTimeout, remaining()),
         "bedrock_converse",
       );
       emit({
@@ -396,7 +415,9 @@ export async function runAgent(
       });
     } catch (err) {
       const isTimeout = err instanceof OperationTimeoutError;
-      terminationReason = isTimeout ? "total_timeout" : "model_error";
+      terminationReason = isTimeout
+        ? (isTimedOut() ? "total_timeout" : "model_error")
+        : "model_error";
       emit({
         timestamp: new Date(t0).toISOString(),
         durationMs: Date.now() - t0,
@@ -525,7 +546,6 @@ export async function runAgent(
 
         // City must match the trusted destination
         if (typeof dp.city === "string" && dp.city !== trusted.city) {
-          toolCallCount--; // don't count a blocked trust violation
           emit({
             timestamp: new Date().toISOString(),
             durationMs: 0,
@@ -552,7 +572,6 @@ export async function runAgent(
             (id) => !trusted.confirmedAnchors.has(id),
           );
           if (untrusted.length > 0) {
-            toolCallCount--;
             emit({
               timestamp: new Date().toISOString(),
               durationMs: 0,
@@ -613,8 +632,8 @@ export async function runAgent(
       const totalBefore = budget.totalCalls;
       try {
         const outcome = await withTimeout(
-          deps.dispatchToolCall(name, dispatchInput, trackedDeps),
-          Math.min(OPERATION_TIMEOUT_MS, remaining()),
+          (signal) => deps.dispatchToolCall(name, dispatchInput, trackedDeps, signal),
+          Math.min(opTimeout, remaining()),
           `tool:${name}`,
         );
         const dur = Date.now() - dt0;

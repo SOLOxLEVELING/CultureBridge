@@ -202,8 +202,9 @@ const DEFAULT_DEPS: ToolDeps = {
 async function executeResolveAnchor(
   args: ResolveAnchorArgs,
   deps: ToolDeps,
+  signal?: AbortSignal,
 ): Promise<ResolveAnchorResult> {
-  const searchResult = await deps.searchEntity(args.query);
+  const searchResult = await deps.searchEntity(args.query, undefined, signal);
   const resolved = resolveEntityFromResults(
     searchResult.data.results,
     args.type,
@@ -258,6 +259,7 @@ function candidateToEntry(
 async function executeDiscoverPlaces(
   args: DiscoverPlacesArgs,
   deps: ToolDeps,
+  signal?: AbortSignal,
 ): Promise<DiscoverPlacesResult> {
   const anchors: CulturalAnchor[] = args.anchor_ids.map((id, i) => ({
     entityId: id,
@@ -269,6 +271,7 @@ async function executeDiscoverPlaces(
     city: args.city,
     categoryTagId: args.category_tag_id,
     fetchInsights: deps.fetchInsights,
+    signal,
   });
 
   const accepted = result.accepted.map(candidateToEntry);
@@ -293,8 +296,9 @@ async function executeDiscoverPlaces(
 async function executeFindTags(
   args: FindTagsArgs,
   deps: ToolDeps,
+  signal?: AbortSignal,
 ): Promise<FindTagsResult> {
-  const result = await deps.searchTags(args.query, 5);
+  const result = await deps.searchTags(args.query, 5, signal);
   return {
     tags: result.data.results.tags.map((t) => ({
       id: t.id,
@@ -319,6 +323,7 @@ export async function dispatchToolCall(
   toolName: string,
   toolInput: unknown,
   deps: ToolDeps = DEFAULT_DEPS,
+  signal?: AbortSignal,
 ): Promise<ToolExecutionOutcome> {
   if (toolName === TOOL_NAMES.RESOLVE_ANCHOR) {
     const validated = validateResolveAnchorArgs(toolInput);
@@ -326,7 +331,7 @@ export async function dispatchToolCall(
       return { ok: false, toolName, error: validated };
     }
     try {
-      const result = await executeResolveAnchor(validated, deps);
+      const result = await executeResolveAnchor(validated, deps, signal);
       return { ok: true, toolName: TOOL_NAMES.RESOLVE_ANCHOR, result };
     } catch (err) {
       return { ok: false, toolName, error: sanitizeError(err) };
@@ -339,7 +344,7 @@ export async function dispatchToolCall(
       return { ok: false, toolName, error: validated };
     }
     try {
-      const result = await executeDiscoverPlaces(validated, deps);
+      const result = await executeDiscoverPlaces(validated, deps, signal);
       return { ok: true, toolName: TOOL_NAMES.DISCOVER_PLACES, result };
     } catch (err) {
       return { ok: false, toolName, error: sanitizeError(err) };
@@ -352,7 +357,7 @@ export async function dispatchToolCall(
       return { ok: false, toolName, error: validated };
     }
     try {
-      const result = await executeFindTags(validated, deps);
+      const result = await executeFindTags(validated, deps, signal);
       return { ok: true, toolName: TOOL_NAMES.FIND_TAGS, result };
     } catch (err) {
       return { ok: false, toolName, error: sanitizeError(err) };

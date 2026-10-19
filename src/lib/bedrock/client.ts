@@ -59,6 +59,7 @@ export interface ConverseInput {
   tools?: ToolConfiguration;
   maxTokens?: number;
   modelId?: string;
+  signal?: AbortSignal;
 }
 
 export type StopReason =
@@ -101,7 +102,9 @@ export async function converse(input: ConverseInput): Promise<ConverseOutput> {
     },
   });
 
-  const response: ConverseCommandOutput = await client.send(command);
+  const response: ConverseCommandOutput = await client.send(command, {
+    abortSignal: input.signal,
+  });
 
   const outputContent = response.output?.message?.content ?? [];
   const stopReason = (response.stopReason ?? "end_turn") as StopReason;

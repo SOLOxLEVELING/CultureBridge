@@ -60,6 +60,7 @@ export const DEFAULT_RESULTS_PER_QUERY = 10;
 
 export type InsightsFetcher = (
   params: InsightsParams,
+  signal?: AbortSignal,
 ) => Promise<QlooResult<InsightsResponse>>;
 
 export interface DiscoveryInput {
@@ -69,6 +70,7 @@ export interface DiscoveryInput {
   fetchInsights?: InsightsFetcher;
   maxAnchorQueries?: number;
   resultsPerQuery?: number;
+  signal?: AbortSignal;
 }
 
 // --- Core discovery ---
@@ -83,6 +85,7 @@ export async function discover(
     fetchInsights = qlooInsights,
     maxAnchorQueries = DEFAULT_MAX_ANCHOR_QUERIES,
     resultsPerQuery = DEFAULT_RESULTS_PER_QUERY,
+    signal,
   } = input;
 
   const effectiveAnchors = anchors.slice(0, maxAnchorQueries);
@@ -111,7 +114,7 @@ export async function discover(
         tagId: categoryTagId,
         take: resultsPerQuery,
         explainability: true,
-      });
+      }, signal);
       return { anchor, result };
     }),
   );
@@ -161,7 +164,7 @@ export async function discover(
       tagId: categoryTagId,
       take: resultsPerQuery,
       explainability: true,
-    });
+    }, signal);
     queriesUsed++;
 
     const entities = blendedResult.data.results.entities;

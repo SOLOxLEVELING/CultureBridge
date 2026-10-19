@@ -61,23 +61,55 @@ export class QlooApiError extends Error {
   }
 }
 
+function isAbortError(e: unknown): boolean {
+  return e instanceof DOMException && e.name === "AbortError";
+}
+
+function throwIfAborted(signal?: AbortSignal): void {
+  if (signal?.aborted) {
+    throw new DOMException("The operation was aborted", "AbortError");
+  }
+}
+
+function abortableSleep(ms: number, signal?: AbortSignal): Promise<void> {
+  if (!signal) return new Promise((r) => setTimeout(r, ms));
+  throwIfAborted(signal);
+  return new Promise<void>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      signal.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(new DOMException("The operation was aborted", "AbortError"));
+    };
+    signal.addEventListener("abort", onAbort, { once: true });
+  });
+}
+
 async function fetchWithTimeout(
   url: string,
   init: RequestInit,
   timeoutMs: number,
+  signal?: AbortSignal,
 ): Promise<Response> {
+  throwIfAborted(signal);
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
+  const onAbort = () => controller.abort();
+  signal?.addEventListener("abort", onAbort, { once: true });
   try {
     return await fetch(url, { ...init, signal: controller.signal });
   } finally {
     clearTimeout(timer);
+    signal?.removeEventListener("abort", onAbort);
   }
 }
 
 async function callApi(
   path: string,
   params: Record<string, string>,
+  signal?: AbortSignal,
 ): Promise<unknown> {
   const url = new URL(path, BASE_URL);
   for (const [k, v] of Object.entries(params)) {
@@ -87,9 +119,11 @@ async function callApi(
   let lastError: Error | null = null;
 
   for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+    throwIfAborted(signal);
+
     if (attempt > 0) {
       const backoff = INITIAL_BACKOFF_MS * Math.pow(2, attempt - 1);
-      await new Promise((r) => setTimeout(r, backoff));
+      await abortableSleep(backoff, signal);
     }
 
     try {
@@ -97,6 +131,7 @@ async function callApi(
         url.toString(),
         { headers: { "X-Api-Key": getApiKey() } },
         REQUEST_TIMEOUT_MS,
+        signal,
       );
 
       if (res.status >= 500 || res.status === 429) {
@@ -110,6 +145,8 @@ async function callApi(
 
       return await res.json();
     } catch (e) {
+      if (isAbortError(e)) throw e;
+      throwIfAborted(signal);
       if (e instanceof QlooApiError && e.status < 500 && e.status !== 429) {
         throw e;
       }
@@ -135,6 +172,7 @@ async function cachedCall<T>(
   path: string,
   params: Record<string, string>,
   parse: (raw: unknown) => T,
+  signal?: AbortSignal,
 ): Promise<QlooResult<T>> {
   const key = cacheKey(path, params);
   const hit = getCached<T>(key);
@@ -142,7 +180,7 @@ async function cachedCall<T>(
     return { data: hit.data, meta: { path, params, cached: true } };
   }
 
-  const raw = await callApi(path, params);
+  const raw = await callApi(path, params, signal);
   const data = parse(raw);
   setCache(key, data);
   return { data, meta: { path, params, cached: false } };
@@ -151,9 +189,13 @@ async function cachedCall<T>(
 export async function searchEntity(
   query: string,
   take: number = 10,
+  signal?: AbortSignal,
 ): Promise<QlooResult<SearchResponse>> {
-  return cachedCall("/search", { query, take: String(take) }, (raw) =>
-    SearchResponseSchema.parse(raw),
+  return cachedCall(
+    "/search",
+    { query, take: String(take) },
+    (raw) => SearchResponseSchema.parse(raw),
+    signal,
   );
 }
 
@@ -167,6 +209,7 @@ export interface InsightsParams {
 
 export async function insights(
   params: InsightsParams,
+  signal?: AbortSignal,
 ): Promise<QlooResult<InsightsResponse>> {
   const query: Record<string, string> = {
     "filter.type": "urn:entity:place",
@@ -186,19 +229,24 @@ export async function insights(
     query["feature.explainability"] = "true";
   }
 
-  return cachedCall("/v2/insights", query, (raw) =>
-    InsightsResponseSchema.parse(raw),
+  return cachedCall(
+    "/v2/insights",
+    query,
+    (raw) => InsightsResponseSchema.parse(raw),
+    signal,
   );
 }
 
 export async function searchTags(
   query: string,
   take: number = 5,
+  signal?: AbortSignal,
 ): Promise<QlooResult<TagsResponse>> {
   return cachedCall(
     "/v2/tags",
     { "filter.query": query, take: String(take) },
     (raw) => TagsResponseSchema.parse(raw),
+    signal,
   );
 }
 
