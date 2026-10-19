@@ -100,7 +100,7 @@ export const InsightEntitySchema = z.looseObject({
   subtype: z.string().optional(),
   properties: InsightEntityPropertiesSchema.optional(),
   location: LocationSchema.optional(),
-  tags: z.array(EntityTagSchema).optional(),
+  tags: z.array(EntityTagSchema).nullable().optional(),
   query: QueryInfoSchema.optional(),
   popularity: z.number().optional(),
   disambiguation: z.string().nullable().optional(),

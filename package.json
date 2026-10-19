@@ -11,6 +11,8 @@
     "test:smoke": "SMOKE=1 node --import tsx --test src/test/**/*.smoke.ts"
   },
   "dependencies": {
+    "@aws-sdk/client-bedrock": "^3.1152.0",
+    "@aws-sdk/client-bedrock-runtime": "^3.1152.0",
     "next": "16.4.2",
     "react": "19.3.0",
     "react-dom": "19.3.0",

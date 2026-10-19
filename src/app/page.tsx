@@ -1,3 +1,5 @@
+import Link from "next/link";
+
 export default function Home() {
   return (
     <main className="flex flex-1 flex-col items-center justify-center px-6 text-center">
@@ -11,9 +13,12 @@ export default function Home() {
         Find places that connect to what you already love — with honest evidence
         for every suggestion.
       </p>
-      <div className="mt-10 rounded-full border border-foreground/20 px-6 py-2 text-sm text-foreground/50">
-        Coming Soon
-      </div>
+      <Link
+        href="/discover"
+        className="mt-10 rounded-full border border-foreground/20 px-6 py-2 text-sm text-foreground/70 transition-colors hover:bg-foreground/5 hover:text-foreground"
+      >
+        Try the Berlin Demo
+      </Link>
     </main>
   );
 }
