@@ -14,6 +14,7 @@ import type {
   ToolExecutionOutcome,
   ResolveAnchorResult,
   DiscoverPlacesResult,
+  FindTagsResult,
   FinalizeResult,
 } from "../bedrock";
 import {
@@ -74,13 +75,21 @@ export type TraceEventStatus =
   | "city_mismatch"
   | "untrusted_anchor"
   | "filtered_ids"
-  | "info";
+  | "info"
+  | "fallback_triggered"
+  | "fallback_success"
+  | "fallback_no_results"
+  | "fallback_skipped"
+  | "fallback_exhausted"
+  | "duplicate_blocked";
+
+export type FallbackStage = "alt_tag" | "drop_tag" | "broaden";
 
 export interface TraceEvent {
   id: number;
   timestamp: string;
   durationMs: number;
-  type: "model_call" | "tool_dispatch" | "termination";
+  type: "model_call" | "tool_dispatch" | "termination" | "fallback";
   inputTokens?: number;
   outputTokens?: number;
   stopReason?: string;
@@ -96,6 +105,13 @@ export interface TraceEvent {
   terminationReason?: TerminationReason;
   fallbackUsed: boolean;
   detail?: string;
+  fallbackStage?: FallbackStage;
+  fallbackReason?: string;
+  originalTagId?: string;
+  alternativeTagId?: string;
+  anchorIdsUsed?: string[];
+  tagDropped?: boolean;
+  cached?: boolean;
 }
 
 export interface AgentRunResult {
@@ -296,6 +312,568 @@ function withTimeout<T>(
   });
 }
 
+// ── Fallback infrastructure ───────────────────────────────────
+
+const KNOWN_EMPTY_TAGS = new Set(["urn:tag:category:place:coffee"]);
+const PLACE_CATEGORY_PREFIX = "urn:tag:category:place:";
+
+function tagSlug(tagId: string): string {
+  return tagId.startsWith(PLACE_CATEGORY_PREFIX)
+    ? tagId.slice(PLACE_CATEGORY_PREFIX.length)
+    : tagId;
+}
+
+function tagSlugToQuery(tagId: string): string {
+  return tagSlug(tagId).replace(/_/g, " ");
+}
+
+function isPlaceCategoryTag(tagId: string): boolean {
+  return tagId.startsWith(PLACE_CATEGORY_PREFIX);
+}
+
+interface FallbackAttempt {
+  stage: FallbackStage;
+  outcome: "success" | "no_results" | "skipped" | "budget_blocked";
+  reason?: string;
+  tagId?: string;
+  anchorIds?: string[];
+  acceptedCount: number;
+}
+
+interface FallbackObjective {
+  key: string;
+  anchorIds: string[];
+  city: string;
+  originalTagId: string | undefined;
+  initialAccepted: number;
+  attempts: FallbackAttempt[];
+  exhausted: boolean;
+}
+
+class FallbackTracker {
+  private objectives = new Map<string, FallbackObjective>();
+
+  private makeKey(anchorIds: string[], city: string, tagId: string | undefined): string {
+    return [...anchorIds].sort().join(",") + "|" + city + "|" + (tagId ?? "");
+  }
+
+  registerInitial(
+    anchorIds: string[],
+    city: string,
+    tagId: string | undefined,
+    acceptedCount: number,
+  ): FallbackObjective {
+    const key = this.makeKey(anchorIds, city, tagId);
+    const existing = this.objectives.get(key);
+    if (existing) {
+      existing.initialAccepted = acceptedCount;
+      return existing;
+    }
+    const obj: FallbackObjective = {
+      key,
+      anchorIds,
+      city,
+      originalTagId: tagId,
+      initialAccepted: acceptedCount,
+      attempts: [],
+      exhausted: false,
+    };
+    this.objectives.set(key, obj);
+    return obj;
+  }
+
+  getObjective(anchorIds: string[], city: string, tagId: string | undefined): FallbackObjective | undefined {
+    return this.objectives.get(this.makeKey(anchorIds, city, tagId));
+  }
+
+  isExhausted(anchorIds: string[], city: string, tagId: string | undefined): boolean {
+    const obj = this.getObjective(anchorIds, city, tagId);
+    return !!obj?.exhausted;
+  }
+
+  hasAttemptedTag(objective: FallbackObjective, tagId: string): boolean {
+    if (tagId === objective.originalTagId) return true;
+    return objective.attempts.some((a) => a.tagId === tagId);
+  }
+
+  recordAttempt(objective: FallbackObjective, attempt: FallbackAttempt): void {
+    objective.attempts.push(attempt);
+  }
+
+  markExhausted(objective: FallbackObjective): void {
+    objective.exhausted = true;
+  }
+}
+
+interface FallbackChainParams {
+  anchorIds: string[];
+  anchorNames: string[];
+  city: string;
+  originalTagId: string | undefined;
+  objective: FallbackObjective;
+  tracker: FallbackTracker;
+  confirmedAnchors: Map<string, ConfirmedAnchor>;
+  deps: AgentRunnerDeps;
+  trackedDeps: ToolDeps;
+  budget: QlooBudgetTracker;
+  toolCallCount: number;
+  toolCallLimit: number;
+  opTimeout: number;
+  remaining: () => number;
+  isTimedOut: () => boolean;
+  emit: (event: Omit<TraceEvent, "id">) => void;
+}
+
+interface FallbackChainResult {
+  bestResult: DiscoverPlacesResult | null;
+  additionalToolCalls: number;
+}
+
+async function executeFallbackChain(
+  params: FallbackChainParams,
+): Promise<FallbackChainResult> {
+  const {
+    anchorIds,
+    anchorNames,
+    city,
+    originalTagId,
+    objective,
+    tracker,
+    confirmedAnchors,
+    deps,
+    trackedDeps,
+    budget,
+    opTimeout,
+    remaining,
+    isTimedOut,
+    emit,
+  } = params;
+  let { toolCallCount, toolCallLimit } = params;
+  let additionalToolCalls = 0;
+  let bestResult: DiscoverPlacesResult | null = null;
+
+  function canProceed(): boolean {
+    return !isTimedOut() && toolCallCount < toolCallLimit;
+  }
+
+  function estimateDiscoverQloo(ids: string[]): number {
+    return ids.length + 1;
+  }
+
+  async function dispatchInternal(
+    toolName: string,
+    toolInput: unknown,
+  ): Promise<ToolExecutionOutcome | null> {
+    const estimated = estimateQlooCalls(toolName, toolInput);
+    if (estimated > 0 && !budget.canAfford(estimated)) return null;
+    const totalBefore = budget.totalCalls;
+    try {
+      const outcome = await withTimeout(
+        (signal) => deps.dispatchToolCall(toolName, toolInput, trackedDeps, signal),
+        Math.min(opTimeout, remaining()),
+        `fallback:${toolName}`,
+      );
+      if (budget.totalCalls === totalBefore && estimated > 0 && outcome.ok) {
+        for (let i = 0; i < estimated; i++) budget.recordOutbound();
+      }
+      return outcome;
+    } catch {
+      return null;
+    }
+  }
+
+  // ── Stage 1: Alternative tag ──
+  const hasTag = !!originalTagId;
+  if (hasTag) {
+    if (KNOWN_EMPTY_TAGS.has(originalTagId!)) {
+      const attempt: FallbackAttempt = {
+        stage: "alt_tag",
+        outcome: "skipped",
+        reason: `Known empty tag: ${originalTagId}`,
+        acceptedCount: 0,
+      };
+      tracker.recordAttempt(objective, attempt);
+      emit({
+        timestamp: new Date().toISOString(),
+        durationMs: 0,
+        type: "fallback",
+        status: "fallback_skipped",
+        fallbackUsed: true,
+        fallbackStage: "alt_tag",
+        fallbackReason: `Known empty tag: ${originalTagId}`,
+        originalTagId: originalTagId!,
+      });
+    } else if (canProceed()) {
+      // Call find_tags to get alternatives
+      toolCallCount++;
+      additionalToolCalls++;
+      const findTagsOutcome = await dispatchInternal("find_tags", {
+        query: tagSlugToQuery(originalTagId!),
+      });
+
+      let alternativeTagId: string | undefined;
+      if (findTagsOutcome?.ok) {
+        const tagsResult = findTagsOutcome.result as FindTagsResult;
+        for (const tag of tagsResult.tags) {
+          if (
+            isPlaceCategoryTag(tag.id) &&
+            tag.id !== originalTagId &&
+            !KNOWN_EMPTY_TAGS.has(tag.id) &&
+            !tracker.hasAttemptedTag(objective, tag.id)
+          ) {
+            alternativeTagId = tag.id;
+            break;
+          }
+        }
+      }
+
+      if (alternativeTagId && canProceed()) {
+        toolCallCount++;
+        additionalToolCalls++;
+        const discoverOutcome = await dispatchInternal("discover_places", {
+          anchor_ids: anchorIds,
+          anchor_names: anchorNames,
+          city,
+          category_tag_id: alternativeTagId,
+        });
+
+        if (discoverOutcome?.ok) {
+          const r = discoverOutcome.result as DiscoverPlacesResult;
+          const attempt: FallbackAttempt = {
+            stage: "alt_tag",
+            outcome: r.accepted.length > 0 ? "success" : "no_results",
+            tagId: alternativeTagId,
+            acceptedCount: r.accepted.length,
+          };
+          tracker.recordAttempt(objective, attempt);
+          emit({
+            timestamp: new Date().toISOString(),
+            durationMs: 0,
+            type: "fallback",
+            status: r.accepted.length > 0 ? "fallback_success" : "fallback_no_results",
+            fallbackUsed: true,
+            fallbackStage: "alt_tag",
+            fallbackReason: "Trying grounded alternative tag",
+            originalTagId: originalTagId!,
+            alternativeTagId,
+            acceptedCount: r.accepted.length,
+            reviewCount: r.reviewCount,
+            rejectedCount: r.rejectedCount,
+            rejectedReasons: r.rejectedReasons,
+            qlooRequestsMade: budget.outbound,
+            qlooCacheHits: budget.cacheHits,
+            cached: r.budget.queriesUsed === 0,
+          });
+          if (r.accepted.length > 0) {
+            bestResult = r;
+            return { bestResult, additionalToolCalls };
+          }
+        } else {
+          const attempt: FallbackAttempt = {
+            stage: "alt_tag",
+            outcome: "no_results",
+            tagId: alternativeTagId,
+            reason: "Dispatch failed",
+            acceptedCount: 0,
+          };
+          tracker.recordAttempt(objective, attempt);
+          emit({
+            timestamp: new Date().toISOString(),
+            durationMs: 0,
+            type: "fallback",
+            status: "fallback_no_results",
+            fallbackUsed: true,
+            fallbackStage: "alt_tag",
+            fallbackReason: "Alternative tag dispatch failed",
+            originalTagId: originalTagId!,
+            alternativeTagId,
+            acceptedCount: 0,
+          });
+        }
+      } else if (!alternativeTagId) {
+        const attempt: FallbackAttempt = {
+          stage: "alt_tag",
+          outcome: "skipped",
+          reason: "No grounded alternative tag found",
+          acceptedCount: 0,
+        };
+        tracker.recordAttempt(objective, attempt);
+        emit({
+          timestamp: new Date().toISOString(),
+          durationMs: 0,
+          type: "fallback",
+          status: "fallback_skipped",
+          fallbackUsed: true,
+          fallbackStage: "alt_tag",
+          fallbackReason: "No grounded alternative tag found",
+          originalTagId: originalTagId!,
+        });
+      } else {
+        // Can't proceed (budget/timeout)
+        const attempt: FallbackAttempt = {
+          stage: "alt_tag",
+          outcome: "budget_blocked",
+          reason: "Budget or timeout constraint",
+          acceptedCount: 0,
+        };
+        tracker.recordAttempt(objective, attempt);
+        emit({
+          timestamp: new Date().toISOString(),
+          durationMs: 0,
+          type: "fallback",
+          status: "budget_blocked",
+          fallbackUsed: true,
+          fallbackStage: "alt_tag",
+          fallbackReason: "Budget or timeout constraint",
+        });
+      }
+    } else {
+      // Can't proceed for Stage 1
+      const attempt: FallbackAttempt = {
+        stage: "alt_tag",
+        outcome: "budget_blocked",
+        reason: "Budget or timeout constraint",
+        acceptedCount: 0,
+      };
+      tracker.recordAttempt(objective, attempt);
+      emit({
+        timestamp: new Date().toISOString(),
+        durationMs: 0,
+        type: "fallback",
+        status: "budget_blocked",
+        fallbackUsed: true,
+        fallbackStage: "alt_tag",
+        fallbackReason: "Budget or timeout constraint",
+      });
+    }
+
+    // ── Stage 2: Drop tag ──
+    if (canProceed()) {
+      toolCallCount++;
+      additionalToolCalls++;
+      const discoverOutcome = await dispatchInternal("discover_places", {
+        anchor_ids: anchorIds,
+        anchor_names: anchorNames,
+        city,
+      });
+
+      if (discoverOutcome?.ok) {
+        const r = discoverOutcome.result as DiscoverPlacesResult;
+        const attempt: FallbackAttempt = {
+          stage: "drop_tag",
+          outcome: r.accepted.length > 0 ? "success" : "no_results",
+          acceptedCount: r.accepted.length,
+        };
+        tracker.recordAttempt(objective, attempt);
+        emit({
+          timestamp: new Date().toISOString(),
+          durationMs: 0,
+          type: "fallback",
+          status: r.accepted.length > 0 ? "fallback_success" : "fallback_no_results",
+          fallbackUsed: true,
+          fallbackStage: "drop_tag",
+          fallbackReason: "Dropped category tag, classifying from entity tags",
+          originalTagId: originalTagId!,
+          tagDropped: true,
+          anchorIdsUsed: anchorIds,
+          acceptedCount: r.accepted.length,
+          reviewCount: r.reviewCount,
+          rejectedCount: r.rejectedCount,
+          rejectedReasons: r.rejectedReasons,
+          qlooRequestsMade: budget.outbound,
+          qlooCacheHits: budget.cacheHits,
+        });
+        if (r.accepted.length > 0) {
+          bestResult = r;
+          return { bestResult, additionalToolCalls };
+        }
+      } else {
+        const attempt: FallbackAttempt = {
+          stage: "drop_tag",
+          outcome: "no_results",
+          reason: "Dispatch failed",
+          acceptedCount: 0,
+        };
+        tracker.recordAttempt(objective, attempt);
+        emit({
+          timestamp: new Date().toISOString(),
+          durationMs: 0,
+          type: "fallback",
+          status: "fallback_no_results",
+          fallbackUsed: true,
+          fallbackStage: "drop_tag",
+          fallbackReason: "Tagless dispatch failed",
+          originalTagId: originalTagId!,
+          tagDropped: true,
+          acceptedCount: 0,
+        });
+      }
+    } else {
+      const attempt: FallbackAttempt = {
+        stage: "drop_tag",
+        outcome: "budget_blocked",
+        reason: "Budget or timeout constraint",
+        acceptedCount: 0,
+      };
+      tracker.recordAttempt(objective, attempt);
+      emit({
+        timestamp: new Date().toISOString(),
+        durationMs: 0,
+        type: "fallback",
+        status: "budget_blocked",
+        fallbackUsed: true,
+        fallbackStage: "drop_tag",
+        fallbackReason: "Budget or timeout constraint",
+      });
+    }
+  }
+
+  // ── Stage 3: Broaden anchors ──
+  const allConfirmedIds = [...confirmedAnchors.keys()];
+  const currentAnchorSet = new Set(anchorIds);
+  const additionalAnchors = allConfirmedIds.filter(
+    (id) => !currentAnchorSet.has(id),
+  );
+
+  if (additionalAnchors.length === 0) {
+    const attempt: FallbackAttempt = {
+      stage: "broaden",
+      outcome: "skipped",
+      reason: "No additional trusted anchors available",
+      acceptedCount: 0,
+    };
+    tracker.recordAttempt(objective, attempt);
+    emit({
+      timestamp: new Date().toISOString(),
+      durationMs: 0,
+      type: "fallback",
+      status: "fallback_skipped",
+      fallbackUsed: true,
+      fallbackStage: "broaden",
+      fallbackReason: "No additional trusted anchors available",
+      anchorIdsUsed: anchorIds,
+    });
+  } else if (canProceed()) {
+    const broadenedIds = [...anchorIds, ...additionalAnchors].slice(0, 5);
+    const broadenedNames = broadenedIds.map(
+      (id) => confirmedAnchors.get(id)!.name,
+    );
+
+    const estimated = estimateDiscoverQloo(broadenedIds);
+    if (!budget.canAfford(estimated)) {
+      const attempt: FallbackAttempt = {
+        stage: "broaden",
+        outcome: "budget_blocked",
+        reason: `Need ${estimated} Qloo calls, ${budget.remaining} remaining`,
+        anchorIds: broadenedIds,
+        acceptedCount: 0,
+      };
+      tracker.recordAttempt(objective, attempt);
+      emit({
+        timestamp: new Date().toISOString(),
+        durationMs: 0,
+        type: "fallback",
+        status: "budget_blocked",
+        fallbackUsed: true,
+        fallbackStage: "broaden",
+        fallbackReason: `Qloo budget insufficient: need ${estimated}, have ${budget.remaining}`,
+        anchorIdsUsed: broadenedIds,
+      });
+    } else {
+      toolCallCount++;
+      additionalToolCalls++;
+      const discoverOutcome = await dispatchInternal("discover_places", {
+        anchor_ids: broadenedIds,
+        anchor_names: broadenedNames,
+        city,
+      });
+
+      if (discoverOutcome?.ok) {
+        const r = discoverOutcome.result as DiscoverPlacesResult;
+        const attempt: FallbackAttempt = {
+          stage: "broaden",
+          outcome: r.accepted.length > 0 ? "success" : "no_results",
+          anchorIds: broadenedIds,
+          acceptedCount: r.accepted.length,
+        };
+        tracker.recordAttempt(objective, attempt);
+        emit({
+          timestamp: new Date().toISOString(),
+          durationMs: 0,
+          type: "fallback",
+          status: r.accepted.length > 0 ? "fallback_success" : "fallback_no_results",
+          fallbackUsed: true,
+          fallbackStage: "broaden",
+          fallbackReason: "Broadened anchor set with additional confirmed anchors",
+          anchorIdsUsed: broadenedIds,
+          acceptedCount: r.accepted.length,
+          reviewCount: r.reviewCount,
+          rejectedCount: r.rejectedCount,
+          rejectedReasons: r.rejectedReasons,
+          qlooRequestsMade: budget.outbound,
+          qlooCacheHits: budget.cacheHits,
+        });
+        if (r.accepted.length > 0) {
+          bestResult = r;
+          return { bestResult, additionalToolCalls };
+        }
+      } else {
+        const attempt: FallbackAttempt = {
+          stage: "broaden",
+          outcome: "no_results",
+          reason: "Dispatch failed",
+          anchorIds: broadenedIds,
+          acceptedCount: 0,
+        };
+        tracker.recordAttempt(objective, attempt);
+        emit({
+          timestamp: new Date().toISOString(),
+          durationMs: 0,
+          type: "fallback",
+          status: "fallback_no_results",
+          fallbackUsed: true,
+          fallbackStage: "broaden",
+          fallbackReason: "Broadened dispatch failed",
+          anchorIdsUsed: broadenedIds,
+          acceptedCount: 0,
+        });
+      }
+    }
+  } else {
+    const attempt: FallbackAttempt = {
+      stage: "broaden",
+      outcome: "budget_blocked",
+      reason: "Budget or timeout constraint",
+      acceptedCount: 0,
+    };
+    tracker.recordAttempt(objective, attempt);
+    emit({
+      timestamp: new Date().toISOString(),
+      durationMs: 0,
+      type: "fallback",
+      status: "budget_blocked",
+      fallbackUsed: true,
+      fallbackStage: "broaden",
+      fallbackReason: "Budget or timeout constraint",
+    });
+  }
+
+  // All stages exhausted
+  tracker.markExhausted(objective);
+  emit({
+    timestamp: new Date().toISOString(),
+    durationMs: 0,
+    type: "fallback",
+    status: "fallback_exhausted",
+    fallbackUsed: true,
+    fallbackReason: "All fallback stages exhausted",
+    anchorIdsUsed: anchorIds,
+    originalTagId,
+  });
+
+  return { bestResult, additionalToolCalls };
+}
+
 function createTrackedToolDeps(
   baseDeps: ToolDeps | undefined,
   budget: QlooBudgetTracker,
@@ -352,6 +930,7 @@ export async function runAgent(
   let toolCallCount = 0;
   let finalization: AgentRunResult["finalization"] | undefined;
   let terminationReason: TerminationReason | undefined;
+  const fallbackTracker = new FallbackTracker();
 
   const trackedDeps = createTrackedToolDeps(deps.toolDeps, budget);
   const confirmed = input.confirmedAnchors ?? [];
@@ -544,6 +1123,32 @@ export async function runAgent(
       if (name === TOOL_NAMES.DISCOVER_PLACES) {
         const dp = rawInput as Record<string, unknown>;
 
+        // Duplicate detection: block re-discovery of exhausted objectives
+        if (Array.isArray(dp.anchor_ids)) {
+          const dpCity = typeof dp.city === "string" ? dp.city : trusted.city;
+          const dpTag = typeof dp.category_tag_id === "string" ? dp.category_tag_id : undefined;
+          if (fallbackTracker.isExhausted(dp.anchor_ids as string[], dpCity, dpTag)) {
+            emit({
+              timestamp: new Date().toISOString(),
+              durationMs: 0,
+              type: "tool_dispatch",
+              toolName: name,
+              toolInput: sanitized,
+              status: "duplicate_blocked",
+              detail: "Fallback chain already exhausted for this objective",
+              fallbackUsed: false,
+            });
+            toolResults.push({
+              toolUseId: tuId,
+              result: {
+                error: "This discovery objective has already been attempted and its fallback chain exhausted. Try different anchors or finalize.",
+              },
+              isError: true,
+            });
+            continue;
+          }
+        }
+
         // City must match the trusted destination
         if (typeof dp.city === "string" && dp.city !== trusted.city) {
           emit({
@@ -698,15 +1303,14 @@ export async function runAgent(
 
         if (name === TOOL_NAMES.DISCOVER_PLACES) {
           const r = outcome.result as DiscoverPlacesResult;
-          for (const e of r.accepted) {
-            if (e.recommendation) {
-              trusted.acceptedRecommendations.set(e.entityId, {
-                name: e.name,
-                label: e.recommendation.label,
-              });
-            }
-          }
+          const dpInput = dispatchInput as {
+            anchor_ids: string[];
+            anchor_names: string[];
+            city: string;
+            category_tag_id?: string;
+          };
 
+          // Emit initial discover trace
           emit({
             timestamp: new Date(dt0).toISOString(),
             durationMs: dur,
@@ -722,9 +1326,87 @@ export async function runAgent(
             qlooCacheHits: budget.cacheHits,
             fallbackUsed: false,
           });
+
+          let bestResult = r;
+          let fallbackUsedHere = false;
+
+          // Trigger fallback chain when 0 accepted results
+          if (
+            r.accepted.length === 0 &&
+            !isTimedOut() &&
+            toolCallCount < TOOL_CALL_LIMIT
+          ) {
+            const objective = fallbackTracker.registerInitial(
+              dpInput.anchor_ids,
+              dpInput.city,
+              dpInput.category_tag_id,
+              0,
+            );
+
+            emit({
+              timestamp: new Date().toISOString(),
+              durationMs: 0,
+              type: "fallback",
+              status: "fallback_triggered",
+              fallbackUsed: true,
+              fallbackReason: "Discovery returned 0 accepted results",
+              originalTagId: dpInput.category_tag_id,
+              anchorIdsUsed: dpInput.anchor_ids,
+            });
+
+            const fbResult = await executeFallbackChain({
+              anchorIds: dpInput.anchor_ids,
+              anchorNames: dpInput.anchor_names,
+              city: dpInput.city,
+              originalTagId: dpInput.category_tag_id,
+              objective,
+              tracker: fallbackTracker,
+              confirmedAnchors: trusted.confirmedAnchors,
+              deps,
+              trackedDeps,
+              budget,
+              toolCallCount,
+              toolCallLimit: TOOL_CALL_LIMIT,
+              opTimeout,
+              remaining,
+              isTimedOut,
+              emit,
+            });
+
+            toolCallCount += fbResult.additionalToolCalls;
+            if (fbResult.bestResult) {
+              bestResult = fbResult.bestResult;
+              fallbackUsedHere = true;
+            }
+
+            if (!objective.exhausted) {
+              fallbackTracker.markExhausted(objective);
+            }
+          }
+
+          // Register accepted recommendations from bestResult
+          for (const e of bestResult.accepted) {
+            if (e.recommendation) {
+              trusted.acceptedRecommendations.set(e.entityId, {
+                name: e.name,
+                label: e.recommendation.label,
+              });
+            }
+          }
+
           toolResults.push({
             toolUseId: tuId,
-            result: outcome.result,
+            result: fallbackUsedHere
+              ? {
+                  ...bestResult,
+                  fallbackApplied: {
+                    originalTagId: dpInput.category_tag_id,
+                    stagesAttempted: fallbackTracker
+                      .getObjective(dpInput.anchor_ids, dpInput.city, dpInput.category_tag_id)
+                      ?.attempts.map((a) => a.stage) ?? [],
+                  },
+                }
+              : bestResult,
             isError: false,
           });
           continue;

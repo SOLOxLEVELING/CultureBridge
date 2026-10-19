@@ -11,6 +11,7 @@ export type {
   AgentRunInput,
   TerminationReason,
   TraceEventStatus,
+  FallbackStage,
   TraceEvent,
   AgentRunResult,
   AgentRunnerDeps,
