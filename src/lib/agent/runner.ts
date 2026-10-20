@@ -18,7 +18,7 @@ import type {
   FindTagsResult,
   FinalizeResult,
 } from "../bedrock";
-import { buildStructuredOutput } from "../output";
+import { buildStructuredOutput, OutputValidationError } from "../output";
 import type { StructuredOutput } from "../output";
 import {
   searchEntity as realSearchEntity,
@@ -66,6 +66,7 @@ export type TerminationReason =
   | "qloo_budget_exhausted"
   | "model_error"
   | "invalid_finalization"
+  | "output_validation_failed"
   | "malformed_response"
   | "content_filtered";
 
@@ -1499,12 +1500,37 @@ export async function runAgent(
             recommendationIds: validIds,
             recommendationCount: validIds.length,
           };
-          structuredOutput = buildStructuredOutput(
-            trusted.city,
-            validIds,
-            invalidIds,
-            trusted.acceptedRecommendations,
-          );
+          try {
+            structuredOutput = buildStructuredOutput(
+              trusted.city,
+              validIds,
+              invalidIds,
+              trusted.acceptedRecommendations,
+            );
+          } catch (buildErr) {
+            if (buildErr instanceof OutputValidationError) {
+              emit({
+                timestamp: new Date(dt0).toISOString(),
+                durationMs: Date.now() - dt0,
+                type: "tool_dispatch",
+                toolName: name,
+                toolInput: sanitized,
+                status: "execution_error",
+                detail: "Output schema validation failed during finalization",
+                terminationReason: "output_validation_failed",
+                fallbackUsed: false,
+              });
+              toolResults.push({
+                toolUseId: tuId,
+                result: { error: "Output validation failed." },
+                isError: true,
+              });
+              terminationReason = "output_validation_failed";
+              shouldBreak = true;
+              continue;
+            }
+            throw buildErr;
+          }
           terminationReason = "completed";
           emit({
             timestamp: new Date(dt0).toISOString(),

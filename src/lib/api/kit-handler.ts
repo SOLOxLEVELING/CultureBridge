@@ -9,7 +9,7 @@ import type { SearchResponse } from "../qloo/schemas";
 import { resolveEntityFromResults } from "../qloo/resolver";
 import { candidateToEntry } from "../bedrock";
 import type { DiscoverPlacesResultEntry } from "../bedrock";
-import { buildStructuredOutput, StructuredOutputSchema } from "../output";
+import { buildStructuredOutput, StructuredOutputSchema, OutputValidationError } from "../output";
 import type { StructuredOutput } from "../output";
 
 // ── Request schema ───────────────────────────────────────────
@@ -75,15 +75,27 @@ const responseCache = new Map<string, CacheEntry>();
 
 export function buildCacheKey(req: KitRequest): string {
   const city = req.city.toLowerCase().trim();
+
+  // Represent each anchor as a 2-tuple and sort field-by-field so that a query
+  // containing "|", ";" or any other delimiter cannot collide with a different
+  // query+type pair. JSON.stringify provides unambiguous, escape-safe encoding.
   const anchors = req.anchors
-    .map((a) => `${a.query.toLowerCase().trim()}|${a.type.trim()}`)
-    .sort()
-    .join(";");
+    .map((a): [string, string] => [a.query.toLowerCase().trim(), a.type.trim()])
+    .sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : a[1] < b[1] ? -1 : a[1] > b[1] ? 1 : 0));
+
   const confirmed = (req.confirmedAnchors ?? [])
-    .map((c) => c.entityId)
-    .sort()
-    .join(";");
-  return `kit:${city}::${anchors}::${confirmed}`;
+    .map((c): [string, string, string] => [
+      c.entityId,
+      c.query.toLowerCase().trim(),
+      c.type.trim(),
+    ])
+    .sort((a, b) =>
+      a[0] < b[0] ? -1 : a[0] > b[0] ? 1 :
+      a[1] < b[1] ? -1 : a[1] > b[1] ? 1 :
+      a[2] < b[2] ? -1 : a[2] > b[2] ? 1 : 0,
+    );
+
+  return JSON.stringify({ city, anchors, confirmed });
 }
 
 function getCached(key: string): KitResponse | null {
@@ -169,6 +181,7 @@ export interface AnchorVerificationResult {
 
 export async function verifyConfirmedAnchors(
   confirmedAnchors: NonNullable<KitRequest["confirmedAnchors"]>,
+  anchors: KitRequest["anchors"],
   searchFn: NonNullable<KitHandlerDeps["searchEntity"]>,
   signal?: AbortSignal,
 ): Promise<AnchorVerificationResult> {
@@ -176,8 +189,32 @@ export async function verifyConfirmedAnchors(
   const rejected: AnchorVerificationResult["rejected"] = [];
   const seenIds = new Set<string>();
 
+  // Build a set of normalized anchor keys for O(1) lookup.
+  // JSON.stringify avoids delimiter collisions when query or type contains "|".
+  const anchorKeys = new Set(
+    anchors.map((a) =>
+      JSON.stringify([a.query.toLowerCase().trim(), a.type.trim()]),
+    ),
+  );
+
   for (const ca of confirmedAnchors) {
     if (seenIds.has(ca.entityId)) continue;
+
+    // Check deadline before starting a new verification operation
+    if (signal?.aborted) {
+      throw new DOMException("The operation was aborted", "AbortError");
+    }
+
+    // Reject confirmations whose query/type do not correspond to a submitted anchor
+    const confirmationKey = JSON.stringify([ca.query.toLowerCase().trim(), ca.type.trim()]);
+    if (!anchorKeys.has(confirmationKey)) {
+      rejected.push({
+        entityId: ca.entityId,
+        reason: "no_matching_anchor",
+      });
+      continue;
+    }
+
     try {
       const result = await searchFn(ca.query, undefined, signal);
       const typeMatches = result.data.results.filter((r) =>
@@ -198,7 +235,9 @@ export async function verifyConfirmedAnchors(
           reason: typeMatches.length === 0 ? "type_not_found" : "id_not_in_results",
         });
       }
-    } catch {
+    } catch (err) {
+      // Do not swallow deadline/abort errors as transient search failures
+      if (signal?.aborted) throw err;
       rejected.push({ entityId: ca.entityId, reason: "search_failed" });
     }
   }
@@ -311,6 +350,39 @@ export async function handleKitRequest(
   const deadlineMs = deps.handlerDeadlineMs ?? DEFAULT_HANDLER_DEADLINE_MS;
   const remainingMs = () => Math.max(0, deadlineMs - elapsed());
 
+  // Request-wide deadline — started at the earliest practical point.
+  // Composed into every child scope (verification, agent, fallback).
+  const requestAc = new AbortController();
+  const requestTimer = setTimeout(() => requestAc.abort(), deadlineMs);
+
+  try {
+    return await handleKitRequestInner(
+      body,
+      clientId,
+      deps,
+      requestAc,
+      startMs,
+      elapsed,
+      deadlineMs,
+      remainingMs,
+    );
+  } finally {
+    clearTimeout(requestTimer);
+    // Ensure all child operations are cancelled on return
+    if (!requestAc.signal.aborted) requestAc.abort();
+  }
+}
+
+async function handleKitRequestInner(
+  body: unknown,
+  clientId: string,
+  deps: KitHandlerDeps,
+  requestAc: AbortController,
+  startMs: number,
+  elapsed: () => number,
+  deadlineMs: number,
+  remainingMs: () => number,
+): Promise<{ response: KitResponse; httpStatus: number }> {
   // 1. Input validation
   const parsed = KitRequestSchema.safeParse(body);
   if (!parsed.success) {
@@ -359,15 +431,61 @@ export async function handleKitRequest(
     };
   }
 
-  // 4. Verify confirmed anchors server-side
+  // 4. Verify confirmed anchors server-side (under request deadline)
   const searchFn = deps.searchEntity ?? defaultSearchEntity;
   let verifiedAnchors: VerifiedAnchor[] = [];
   if (req.confirmedAnchors && req.confirmedAnchors.length > 0) {
-    const verification = await verifyConfirmedAnchors(
-      req.confirmedAnchors,
-      searchFn,
-    );
-    verifiedAnchors = verification.verified;
+    try {
+      const verification = await verifyConfirmedAnchors(
+        req.confirmedAnchors,
+        req.anchors,
+        searchFn,
+        requestAc.signal,
+      );
+      verifiedAnchors = verification.verified;
+    } catch {
+      // Verification interrupted by request deadline
+      if (requestAc.signal.aborted) {
+        return {
+          httpStatus: 504,
+          response: {
+            status: "error",
+            output: null,
+            error: {
+              code: "deadline_exceeded",
+              message: "Request deadline expired during anchor verification.",
+            },
+            meta: buildMeta({
+              city: req.city,
+              anchorCount: req.anchors.length,
+              durationMs: elapsed(),
+            }),
+          },
+        };
+      }
+      // Non-deadline verification failure — proceed with no verified anchors
+    }
+  }
+
+  // Check remaining time after verification, before starting agent.
+  // If the request deadline is already expired, return immediately.
+  if (requestAc.signal.aborted || remainingMs() === 0) {
+    return {
+      httpStatus: 504,
+      response: {
+        status: "error",
+        output: null,
+        error: {
+          code: "deadline_exceeded",
+          message: "Not enough time remaining after anchor verification.",
+        },
+        meta: buildMeta({
+          city: req.city,
+          anchorCount: req.anchors.length,
+          durationMs: elapsed(),
+        }),
+      },
+    };
   }
 
   // Build ConfirmedAnchor[] for the agent from verified anchors only
@@ -391,6 +509,10 @@ export async function handleKitRequest(
   );
 
   const agentAc = new AbortController();
+  // Compose: request deadline cancels agent scope
+  const onRequestAbortForAgent = () => agentAc.abort();
+  requestAc.signal.addEventListener("abort", onRequestAbortForAgent, { once: true });
+  if (requestAc.signal.aborted) agentAc.abort();
 
   try {
     const agentTimer = setTimeout(() => agentAc.abort(), timeoutMs);
@@ -466,12 +588,56 @@ export async function handleKitRequest(
       }
 
       output = result.output;
+    } else if (result.status === "output_validation_failed") {
+      // The agent runner's buildStructuredOutput threw OutputValidationError.
+      // Do not fall back — this is an internal failure, not a transient upstream error.
+      return {
+        httpStatus: 500,
+        response: {
+          status: "error",
+          output: null,
+          error: {
+            code: "output_validation_failed",
+            message: "Internal output validation failed.",
+          },
+          meta: buildMeta({
+            runId,
+            city: req.city,
+            anchorCount: req.anchors.length,
+            mode: "agent",
+            durationMs: elapsed(),
+          }),
+        },
+      };
     } else if (result.status !== "completed") {
       throw new Error(`Agent terminated: ${result.status}`);
     }
   } catch {
     if (!agentAc.signal.aborted) agentAc.abort();
+    // If the request deadline fired, don't attempt fallback
+    if (requestAc.signal.aborted) {
+      return {
+        httpStatus: 504,
+        response: {
+          status: "error",
+          output: null,
+          error: {
+            code: "deadline_exceeded",
+            message: "Request deadline expired during agent execution.",
+          },
+          meta: buildMeta({
+            runId,
+            city: req.city,
+            anchorCount: req.anchors.length,
+            mode: "agent",
+            durationMs: elapsed(),
+          }),
+        },
+      };
+    }
     mode = "deterministic";
+  } finally {
+    requestAc.signal.removeEventListener("abort", onRequestAbortForAgent);
   }
 
   // 6. Deterministic fallback — only if enough time remains
@@ -498,6 +664,10 @@ export async function handleKitRequest(
     }
 
     const fallbackAc = new AbortController();
+    // Compose: request deadline cancels fallback scope
+    const onRequestAbortForFallback = () => fallbackAc.abort();
+    requestAc.signal.addEventListener("abort", onRequestAbortForFallback, { once: true });
+    if (requestAc.signal.aborted) fallbackAc.abort();
     const fallbackTimer = setTimeout(
       () => fallbackAc.abort(),
       remainingMs(),
@@ -511,6 +681,46 @@ export async function handleKitRequest(
         fallbackAc.signal,
       );
     } catch (err) {
+      if (err instanceof OutputValidationError) {
+        return {
+          httpStatus: 500,
+          response: {
+            status: "error",
+            output: null,
+            error: {
+              code: "output_validation_failed",
+              message: "Internal output validation failed.",
+            },
+            meta: buildMeta({
+              runId,
+              city: req.city,
+              anchorCount: req.anchors.length,
+              mode: "deterministic",
+              durationMs: elapsed(),
+            }),
+          },
+        };
+      }
+      if (requestAc.signal.aborted) {
+        return {
+          httpStatus: 504,
+          response: {
+            status: "error",
+            output: null,
+            error: {
+              code: "deadline_exceeded",
+              message: "Request deadline expired during fallback discovery.",
+            },
+            meta: buildMeta({
+              runId,
+              city: req.city,
+              anchorCount: req.anchors.length,
+              mode: "deterministic",
+              durationMs: elapsed(),
+            }),
+          },
+        };
+      }
       const msg =
         err instanceof Error ? sanitizeError(err.message) : "Unknown error";
       return {
@@ -533,6 +743,7 @@ export async function handleKitRequest(
       };
     } finally {
       clearTimeout(fallbackTimer);
+      requestAc.signal.removeEventListener("abort", onRequestAbortForFallback);
     }
   }
 

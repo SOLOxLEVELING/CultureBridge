@@ -7,6 +7,7 @@ import {
   buildStructuredOutput,
   buildRecommendation,
   validateOutput,
+  OutputValidationError,
   generateVerifiedExplanation,
   buildExplanationBasis,
   generateDeterministicExplanation,
@@ -741,7 +742,7 @@ describe("validateOutput — schema enforcement", () => {
     assert.deepEqual(validated, out);
   });
 
-  it("schema-invalid output produces safe empty fallback", () => {
+  it("schema-invalid output throws OutputValidationError", () => {
     const invalid = {
       status: "banana",
       summary: 123,
@@ -749,15 +750,13 @@ describe("validateOutput — schema enforcement", () => {
       totalRecommendations: "five",
       invalidIds: null,
     };
-    const result = validateOutput(invalid, "Tokyo");
-    assert.equal(result.status, "empty");
-    assert.equal(result.summary, "No verified recommendations for Tokyo.");
-    assert.deepEqual(result.recommendations, []);
-    assert.equal(result.totalRecommendations, 0);
-    assert.deepEqual(result.invalidIds, []);
+    assert.throws(
+      () => validateOutput(invalid, "Tokyo"),
+      (err: unknown) => err instanceof OutputValidationError,
+    );
   });
 
-  it("safe fallback does not leak raw source data or secrets", () => {
+  it("thrown error does not leak raw source data or secrets", () => {
     const invalid = {
       status: "success",
       summary: "api_key=sk-12345 secret password",
@@ -765,12 +764,17 @@ describe("validateOutput — schema enforcement", () => {
       totalRecommendations: 1,
       invalidIds: [],
     };
-    const result = validateOutput(invalid, "Berlin");
-    const json = JSON.stringify(result);
-    assert.ok(!json.includes("api_key"));
-    assert.ok(!json.includes("sk-12345"));
-    assert.ok(!json.includes("credential"));
-    assert.ok(!json.includes("password"));
+    try {
+      validateOutput(invalid, "Berlin");
+      assert.fail("expected OutputValidationError");
+    } catch (err) {
+      assert.ok(err instanceof OutputValidationError);
+      const msg = err.message;
+      assert.ok(!msg.includes("api_key"));
+      assert.ok(!msg.includes("sk-12345"));
+      assert.ok(!msg.includes("credential"));
+      assert.ok(!msg.includes("password"));
+    }
   });
 
   it("full buildStructuredOutput result passes schema validation", () => {

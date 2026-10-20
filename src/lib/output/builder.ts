@@ -110,19 +110,22 @@ function buildDeterministicSummary(
 
 // ── Schema validation boundary ───────────────────────────────
 
+export class OutputValidationError extends Error {
+  constructor(message: string = "Output schema validation failed") {
+    super(message);
+    this.name = "OutputValidationError";
+  }
+}
+
 export function validateOutput(
   output: unknown,
   city: string,
 ): StructuredOutput {
   const parsed = StructuredOutputSchema.safeParse(output);
   if (parsed.success) return parsed.data;
-  return {
-    status: "empty",
-    summary: `No verified recommendations for ${city}.`,
-    recommendations: [],
-    totalRecommendations: 0,
-    invalidIds: [],
-  };
+  throw new OutputValidationError(
+    `Schema validation failed for ${city} output`,
+  );
 }
 
 // ── Full output builder ───────────────────────────────────────

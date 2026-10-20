@@ -1,4 +1,4 @@
-export { buildStructuredOutput, buildRecommendation, validateOutput } from "./builder";
+export { buildStructuredOutput, buildRecommendation, validateOutput, OutputValidationError } from "./builder";
 export {
   generateVerifiedExplanation,
   buildExplanationBasis,
