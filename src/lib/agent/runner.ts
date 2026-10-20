@@ -1471,7 +1471,7 @@ export async function runAgent(
             recommendationCount: validIds.length,
           };
           structuredOutput = buildStructuredOutput(
-            r.summary,
+            trusted.city,
             validIds,
             invalidIds,
             trusted.acceptedRecommendations,

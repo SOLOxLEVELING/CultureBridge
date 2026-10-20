@@ -6,6 +6,7 @@ import type { CategoryEvidence } from "../lib/validate";
 import {
   buildStructuredOutput,
   buildRecommendation,
+  validateOutput,
   generateVerifiedExplanation,
   buildExplanationBasis,
   generateDeterministicExplanation,
@@ -294,7 +295,7 @@ describe("buildStructuredOutput — ID filtering", () => {
   it("invented IDs are excluded and listed in invalidIds", () => {
     const records = buildRecords(makeEntry());
     const out = buildStructuredOutput(
-      "Summary",
+      "Berlin",
       ["V-1"],
       ["FAKE-1", "FAKE-2"],
       records,
@@ -308,7 +309,7 @@ describe("buildStructuredOutput — ID filtering", () => {
   it("all-invalid IDs produce empty output", () => {
     const records = buildRecords(makeEntry());
     const out = buildStructuredOutput(
-      "Summary",
+      "Berlin",
       [],
       ["FAKE-1"],
       records,
@@ -321,7 +322,7 @@ describe("buildStructuredOutput — ID filtering", () => {
   it("entries with null recommendation are excluded", () => {
     const noRecEntry = makeEntry({ recommendation: null });
     const records = buildRecords(noRecEntry);
-    const out = buildStructuredOutput("Summary", ["V-1"], [], records);
+    const out = buildStructuredOutput("Berlin", ["V-1"], [], records);
     assert.equal(out.recommendations.length, 0);
     assert.equal(out.status, "empty");
   });
@@ -550,17 +551,17 @@ describe("generateVerifiedExplanation — valid explanations pass", () => {
 
 describe("buildStructuredOutput — edge cases", () => {
   it("empty valid IDs produce empty status", () => {
-    const out = buildStructuredOutput("No results.", [], [], new Map());
+    const out = buildStructuredOutput("Berlin", [], [], new Map());
     assert.equal(out.status, "empty");
     assert.equal(out.recommendations.length, 0);
     assert.equal(out.totalRecommendations, 0);
-    assert.equal(out.summary, "No results.");
+    assert.equal(out.summary, "No verified recommendations for Berlin.");
   });
 
   it("partial: some valid, some invalid IDs", () => {
     const records = buildRecords(makeEntry(), makeExploratoryEntry());
     const out = buildStructuredOutput(
-      "Found some.",
+      "Berlin",
       ["V-1"],
       ["GONE-1"],
       records,
@@ -573,7 +574,7 @@ describe("buildStructuredOutput — edge cases", () => {
   it("success: all valid IDs", () => {
     const records = buildRecords(makeEntry(), makeExploratoryEntry());
     const out = buildStructuredOutput(
-      "Found both.",
+      "Berlin",
       ["V-1", "V-2"],
       [],
       records,
@@ -587,7 +588,7 @@ describe("buildStructuredOutput — edge cases", () => {
   it("validates against full Zod schema", () => {
     const records = buildRecords(makeEntry(), makeExploratoryEntry());
     const out = buildStructuredOutput(
-      "Found both.",
+      "Berlin",
       ["V-1", "V-2"],
       [],
       records,
@@ -602,7 +603,7 @@ describe("buildStructuredOutput — edge cases", () => {
 describe("buildStructuredOutput — no secret leakage", () => {
   it("serialized output contains no api_key, secret, token, or auth fields", () => {
     const records = buildRecords(makeEntry());
-    const out = buildStructuredOutput("Done.", ["V-1"], [], records);
+    const out = buildStructuredOutput("Berlin", ["V-1"], [], records);
     const json = JSON.stringify(out);
     assert.ok(!/api.?key/i.test(json), "Must not contain api_key");
     assert.ok(!/\bsecret\b/i.test(json), "Must not contain secret");
@@ -613,7 +614,7 @@ describe("buildStructuredOutput — no secret leakage", () => {
 
   it("trace data and rejected candidates are not in output", () => {
     const records = buildRecords(makeEntry());
-    const out = buildStructuredOutput("Done.", ["V-1"], [], records);
+    const out = buildStructuredOutput("Berlin", ["V-1"], [], records);
     const json = JSON.stringify(out);
     assert.ok(!json.includes("trace"), "Must not contain trace data");
     assert.ok(!json.includes("rejected"), "Must not contain rejected data");
@@ -689,5 +690,93 @@ describe("buildRecommendation — multi-anchor provenance", () => {
     assert.equal(rec.provenance.connectionProvenance.length, 2);
     assert.deepEqual(rec.provenance.anchorIds, ["R-1", "PK-1"]);
     assert.equal(rec.provenance.queryMode, "mixed");
+  });
+});
+
+// ── Deterministic summary replaces model summary ─────────────
+
+describe("buildStructuredOutput — deterministic summary", () => {
+  it("success summary includes city and count", () => {
+    const records = buildRecords(makeEntry(), makeExploratoryEntry());
+    const out = buildStructuredOutput("Berlin", ["V-1", "V-2"], [], records);
+    assert.equal(out.summary, "Found 2 recommendations in Berlin.");
+  });
+
+  it("singular form for one recommendation", () => {
+    const records = buildRecords(makeEntry());
+    const out = buildStructuredOutput("Berlin", ["V-1"], [], records);
+    assert.equal(out.summary, "Found 1 recommendation in Berlin.");
+  });
+
+  it("partial summary includes invalid count", () => {
+    const records = buildRecords(makeEntry());
+    const out = buildStructuredOutput("Berlin", ["V-1"], ["FAKE-1", "FAKE-2"], records);
+    assert.equal(out.summary, "Found 1 recommendation in Berlin. 2 could not be verified.");
+  });
+
+  it("empty summary includes city", () => {
+    const out = buildStructuredOutput("Berlin", [], [], new Map());
+    assert.equal(out.summary, "No verified recommendations for Berlin.");
+  });
+
+  it("model-provided summary text cannot reach the public output", () => {
+    const records = buildRecords(makeEntry());
+    const out = buildStructuredOutput("Berlin", ["V-1"], [], records);
+    assert.ok(out.summary.startsWith("Found ") || out.summary.startsWith("No "));
+    assert.ok(!out.summary.includes("I recommend"));
+    assert.ok(!out.summary.includes("%"));
+    assert.ok(!out.summary.includes("confidence"));
+    assert.ok(!out.summary.includes("highly rated"));
+    assert.ok(!out.summary.includes("personally connected"));
+  });
+});
+
+// ── Schema validation at production boundary ─────────────────
+
+describe("validateOutput — schema enforcement", () => {
+  it("valid output passes through unchanged", () => {
+    const records = buildRecords(makeEntry());
+    const out = buildStructuredOutput("Berlin", ["V-1"], [], records);
+    const validated = validateOutput(out, "Berlin");
+    assert.deepEqual(validated, out);
+  });
+
+  it("schema-invalid output produces safe empty fallback", () => {
+    const invalid = {
+      status: "banana",
+      summary: 123,
+      recommendations: "not an array",
+      totalRecommendations: "five",
+      invalidIds: null,
+    };
+    const result = validateOutput(invalid, "Tokyo");
+    assert.equal(result.status, "empty");
+    assert.equal(result.summary, "No verified recommendations for Tokyo.");
+    assert.deepEqual(result.recommendations, []);
+    assert.equal(result.totalRecommendations, 0);
+    assert.deepEqual(result.invalidIds, []);
+  });
+
+  it("safe fallback does not leak raw source data or secrets", () => {
+    const invalid = {
+      status: "success",
+      summary: "api_key=sk-12345 secret password",
+      recommendations: [{ bad: "data", credential: "xyz" }],
+      totalRecommendations: 1,
+      invalidIds: [],
+    };
+    const result = validateOutput(invalid, "Berlin");
+    const json = JSON.stringify(result);
+    assert.ok(!json.includes("api_key"));
+    assert.ok(!json.includes("sk-12345"));
+    assert.ok(!json.includes("credential"));
+    assert.ok(!json.includes("password"));
+  });
+
+  it("full buildStructuredOutput result passes schema validation", () => {
+    const records = buildRecords(makeEntry(), makeExploratoryEntry(), makeUsefulPlaceEntry());
+    const out = buildStructuredOutput("Berlin", ["V-1", "V-2", "V-3"], [], records);
+    const parsed = StructuredOutputSchema.safeParse(out);
+    assert.ok(parsed.success, "Builder output must always pass Zod validation");
   });
 });

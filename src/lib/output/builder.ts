@@ -5,7 +5,7 @@ import type {
   PlaceDetails,
   RecommendationProvenance,
 } from "./schema";
-import { isValidCoordinate } from "./schema";
+import { isValidCoordinate, StructuredOutputSchema } from "./schema";
 import { generateVerifiedExplanation } from "./explanation";
 
 // ── Field builders ────────────────────────────────────────────
@@ -90,10 +90,45 @@ export function buildRecommendation(
   };
 }
 
+// ── Deterministic summary ────────────────────────────────────
+
+function buildDeterministicSummary(
+  city: string,
+  count: number,
+  invalidCount: number,
+): string {
+  if (count === 0) {
+    return `No verified recommendations for ${city}.`;
+  }
+  const noun = count === 1 ? "recommendation" : "recommendations";
+  const base = `Found ${count} ${noun} in ${city}.`;
+  if (invalidCount > 0) {
+    return `${base} ${invalidCount} could not be verified.`;
+  }
+  return base;
+}
+
+// ── Schema validation boundary ───────────────────────────────
+
+export function validateOutput(
+  output: unknown,
+  city: string,
+): StructuredOutput {
+  const parsed = StructuredOutputSchema.safeParse(output);
+  if (parsed.success) return parsed.data;
+  return {
+    status: "empty",
+    summary: `No verified recommendations for ${city}.`,
+    recommendations: [],
+    totalRecommendations: 0,
+    invalidIds: [],
+  };
+}
+
 // ── Full output builder ───────────────────────────────────────
 
 export function buildStructuredOutput(
-  summary: string,
+  city: string,
   validIds: string[],
   invalidIds: string[],
   acceptedRecords: Map<string, DiscoverPlacesResultEntry>,
@@ -116,11 +151,13 @@ export function buildStructuredOutput(
     status = "success";
   }
 
-  return {
+  const output: StructuredOutput = {
     status,
-    summary,
+    summary: buildDeterministicSummary(city, recommendations.length, invalidIds.length),
     recommendations,
     totalRecommendations: recommendations.length,
     invalidIds,
   };
+
+  return validateOutput(output, city);
 }
