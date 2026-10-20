@@ -5,6 +5,7 @@ export {
   clearResponseCache,
   checkRateLimit,
   clearRateLimits,
+  verifyConfirmedAnchors,
 } from "./kit-handler";
 export type {
   KitRequest,
@@ -12,4 +13,6 @@ export type {
   KitMeta,
   KitErrorDetail,
   KitHandlerDeps,
+  VerifiedAnchor,
+  AnchorVerificationResult,
 } from "./kit-handler";

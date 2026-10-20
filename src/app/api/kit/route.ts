@@ -1,5 +1,10 @@
 import { handleKitRequest } from "@/lib/api";
 
+// Vercel Hobby allows up to 60s; 30s accommodates agent (12s) +
+// fallback (~10s) + verification + response overhead.
+// Must be verified in the Vercel dashboard for the deployed plan.
+export const maxDuration = 30;
+
 function getClientId(request: Request): string {
   const forwarded = request.headers.get("x-forwarded-for");
   if (forwarded) {

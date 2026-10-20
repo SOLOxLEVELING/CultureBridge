@@ -287,30 +287,52 @@ function withTimeout<T>(
   startOp: (signal: AbortSignal) => Promise<T>,
   ms: number,
   label: string,
+  parentSignal?: AbortSignal,
 ): Promise<T> {
   const ac = new AbortController();
+
+  if (parentSignal?.aborted) {
+    ac.abort();
+    return Promise.reject(new OperationTimeoutError(label, 0));
+  }
+
+  const onParentAbort = () => ac.abort();
+  parentSignal?.addEventListener("abort", onParentAbort, { once: true });
+
   return new Promise<T>((resolve, reject) => {
+    const cleanup = () => {
+      clearTimeout(timer);
+      parentSignal?.removeEventListener("abort", onParentAbort);
+    };
     const timer = setTimeout(
       () => {
         ac.abort();
+        cleanup();
         reject(new OperationTimeoutError(label, ms));
       },
       ms,
     );
+
+    if (ac.signal.aborted) {
+      cleanup();
+      reject(new OperationTimeoutError(label, 0));
+      return;
+    }
+
     try {
       startOp(ac.signal).then(
         (v) => {
-          clearTimeout(timer);
+          cleanup();
           resolve(v);
         },
         (e) => {
-          clearTimeout(timer);
+          cleanup();
           if (ac.signal.aborted) return;
           reject(e);
         },
       );
     } catch (e) {
-      clearTimeout(timer);
+      cleanup();
       reject(e);
     }
   });
@@ -426,6 +448,7 @@ interface FallbackChainParams {
   remaining: () => number;
   isTimedOut: () => boolean;
   emit: (event: Omit<TraceEvent, "id">) => void;
+  parentSignal?: AbortSignal;
 }
 
 interface FallbackChainResult {
@@ -451,6 +474,7 @@ async function executeFallbackChain(
     remaining,
     isTimedOut,
     emit,
+    parentSignal,
   } = params;
   let { toolCallCount, toolCallLimit } = params;
   let additionalToolCalls = 0;
@@ -476,6 +500,7 @@ async function executeFallbackChain(
         (signal) => deps.dispatchToolCall(toolName, toolInput, trackedDeps, signal),
         Math.min(opTimeout, remaining()),
         `fallback:${toolName}`,
+        parentSignal,
       );
       if (budget.totalCalls === totalBefore && estimated > 0 && outcome.ok) {
         for (let i = 0; i < estimated; i++) budget.recordOutbound();
@@ -913,6 +938,7 @@ function createTrackedToolDeps(
 export async function runAgent(
   input: AgentRunInput,
   deps: AgentRunnerDeps = DEFAULT_RUNNER_DEPS,
+  signal?: AbortSignal,
 ): Promise<AgentRunResult> {
   const runId = crypto.randomUUID();
   const runStart = Date.now();
@@ -960,7 +986,7 @@ export async function runAgent(
     return Math.max(0, totalTimeout - elapsed());
   }
   function isTimedOut(): boolean {
-    return elapsed() >= totalTimeout;
+    return elapsed() >= totalTimeout || !!signal?.aborted;
   }
 
   // ── Agent loop ─────────────────────────────────────────────
@@ -983,9 +1009,10 @@ export async function runAgent(
     const t0 = Date.now();
     try {
       output = await withTimeout(
-        (signal) => deps.converse({ system: systemPrompt, messages, tools: toolConfig, signal }),
+        (opSignal) => deps.converse({ system: systemPrompt, messages, tools: toolConfig, signal: opSignal }),
         Math.min(opTimeout, remaining()),
         "bedrock_converse",
+        signal,
       );
       emit({
         timestamp: new Date(t0).toISOString(),
@@ -1242,9 +1269,10 @@ export async function runAgent(
       const totalBefore = budget.totalCalls;
       try {
         const outcome = await withTimeout(
-          (signal) => deps.dispatchToolCall(name, dispatchInput, trackedDeps, signal),
+          (opSignal) => deps.dispatchToolCall(name, dispatchInput, trackedDeps, opSignal),
           Math.min(opTimeout, remaining()),
           `tool:${name}`,
+          signal,
         );
         const dur = Date.now() - dt0;
 
@@ -1376,6 +1404,7 @@ export async function runAgent(
               remaining,
               isTimedOut,
               emit,
+              parentSignal: signal,
             });
 
             toolCallCount += fbResult.additionalToolCalls;

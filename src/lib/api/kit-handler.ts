@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { runAgent as defaultRunAgent } from "../agent";
-import type { AgentRunInput, AgentRunResult } from "../agent";
+import type { AgentRunInput, AgentRunResult, ConfirmedAnchor } from "../agent";
 import { discover as defaultDiscover } from "../discover";
 import type { CulturalAnchor, DiscoveryInput } from "../discover";
 import { searchEntity as defaultSearchEntity } from "../qloo/client";
@@ -30,6 +30,8 @@ export const KitRequestSchema = z.object({
       z.object({
         entityId: z.string().min(1),
         name: z.string().min(1),
+        query: z.string().min(1).max(200),
+        type: z.string().min(1).max(100),
       }),
     )
     .max(5)
@@ -62,10 +64,6 @@ export interface KitResponse {
 }
 
 // ── Response cache (24h TTL, instance-local) ─────────────────
-// Caches only schema-validated successful outputs.
-// Instance-local: each serverless instance has its own cache.
-// On Vercel, cold starts clear the cache; this is acceptable
-// for the hackathon deployment stage.
 
 interface CacheEntry {
   response: KitResponse;
@@ -107,10 +105,6 @@ export function clearResponseCache(): void {
 }
 
 // ── Rate limiter (sliding window, instance-local) ────────────
-// 10 requests per 60-second window per client identifier.
-// Instance-local: each serverless instance tracks independently.
-// On Vercel with multiple instances, effective rate is multiplied
-// by instance count. Acceptable for the hackathon stage.
 
 const RATE_WINDOW_MS = 60_000;
 const RATE_LIMIT = 10;
@@ -139,7 +133,10 @@ export function clearRateLimits(): void {
 // ── Injectable dependencies ──────────────────────────────────
 
 export interface KitHandlerDeps {
-  runAgent?: (input: AgentRunInput) => Promise<AgentRunResult>;
+  runAgent?: (
+    input: AgentRunInput,
+    signal?: AbortSignal,
+  ) => Promise<AgentRunResult>;
   searchEntity?: (
     query: string,
     take?: number,
@@ -147,17 +144,75 @@ export interface KitHandlerDeps {
   ) => Promise<QlooResult<SearchResponse>>;
   discover?: (input: DiscoveryInput) => Promise<import("../discover").DiscoveryResult>;
   agentTimeoutMs?: number;
+  handlerDeadlineMs?: number;
 }
 
 const DEFAULT_AGENT_TIMEOUT_MS = 12_000;
+const DEFAULT_HANDLER_DEADLINE_MS = 28_000;
+// Minimum remaining time needed to attempt fallback
+const FALLBACK_MIN_MS = 3_000;
+
+// ── Confirmed-anchor verification ───────────────────────────
+// Re-searches Qloo for each confirmed anchor's original query
+// and type. Accepts only exact entity-ID matches from the
+// server-fetched results. Uses the Qloo-returned name.
+
+export interface VerifiedAnchor {
+  entityId: string;
+  name: string;
+}
+
+export interface AnchorVerificationResult {
+  verified: VerifiedAnchor[];
+  rejected: { entityId: string; reason: string }[];
+}
+
+export async function verifyConfirmedAnchors(
+  confirmedAnchors: NonNullable<KitRequest["confirmedAnchors"]>,
+  searchFn: NonNullable<KitHandlerDeps["searchEntity"]>,
+  signal?: AbortSignal,
+): Promise<AnchorVerificationResult> {
+  const verified: VerifiedAnchor[] = [];
+  const rejected: AnchorVerificationResult["rejected"] = [];
+  const seenIds = new Set<string>();
+
+  for (const ca of confirmedAnchors) {
+    if (seenIds.has(ca.entityId)) continue;
+    try {
+      const result = await searchFn(ca.query, undefined, signal);
+      const typeMatches = result.data.results.filter((r) =>
+        r.types.includes(ca.type),
+      );
+      const exactMatch = typeMatches.find(
+        (r) => r.entity_id === ca.entityId,
+      );
+      if (exactMatch) {
+        verified.push({
+          entityId: exactMatch.entity_id,
+          name: exactMatch.name,
+        });
+        seenIds.add(exactMatch.entity_id);
+      } else {
+        rejected.push({
+          entityId: ca.entityId,
+          reason: typeMatches.length === 0 ? "type_not_found" : "id_not_in_results",
+        });
+      }
+    } catch {
+      rejected.push({ entityId: ca.entityId, reason: "search_failed" });
+    }
+  }
+
+  return { verified, rejected };
+}
 
 // ── Deterministic fallback ───────────────────────────────────
-// Reuses the existing discovery, validation, labeling, and
-// output-builder pipeline. Does NOT use the Bedrock agent loop.
 
 async function runFallback(
   req: KitRequest,
+  verifiedAnchors: VerifiedAnchor[],
   deps: KitHandlerDeps,
+  signal?: AbortSignal,
 ): Promise<StructuredOutput> {
   const searchFn = deps.searchEntity ?? defaultSearchEntity;
   const discoverFn = deps.discover ?? defaultDiscover;
@@ -165,16 +220,17 @@ async function runFallback(
   const resolvedAnchors: CulturalAnchor[] = [];
   const seenIds = new Set<string>();
 
-  for (const c of req.confirmedAnchors ?? []) {
-    if (!seenIds.has(c.entityId)) {
-      resolvedAnchors.push({ entityId: c.entityId, name: c.name });
-      seenIds.add(c.entityId);
+  for (const va of verifiedAnchors) {
+    if (!seenIds.has(va.entityId)) {
+      resolvedAnchors.push({ entityId: va.entityId, name: va.name });
+      seenIds.add(va.entityId);
     }
   }
 
   for (const anchor of req.anchors) {
+    if (signal?.aborted) break;
     try {
-      const result = await searchFn(anchor.query);
+      const result = await searchFn(anchor.query, undefined, signal);
       const resolved = resolveEntityFromResults(
         result.data.results,
         anchor.type,
@@ -204,6 +260,7 @@ async function runFallback(
   const discoveryResult = await discoverFn({
     anchors: resolvedAnchors,
     city: req.city,
+    signal,
   });
 
   const acceptedRecords = new Map<string, DiscoverPlacesResultEntry>();
@@ -251,9 +308,10 @@ export async function handleKitRequest(
 ): Promise<{ response: KitResponse; httpStatus: number }> {
   const startMs = Date.now();
   const elapsed = () => Date.now() - startMs;
+  const deadlineMs = deps.handlerDeadlineMs ?? DEFAULT_HANDLER_DEADLINE_MS;
+  const remainingMs = () => Math.max(0, deadlineMs - elapsed());
 
-  // 1. Input validation — cheap, runs before rate-limit so
-  //    malformed requests don't consume rate-limit slots
+  // 1. Input validation
   const parsed = KitRequestSchema.safeParse(body);
   if (!parsed.success) {
     const issues = parsed.error.issues.map(
@@ -270,7 +328,7 @@ export async function handleKitRequest(
     };
   }
 
-  // 2. Rate limit — checked before any expensive work
+  // 2. Rate limit
   if (checkRateLimit(clientId)) {
     return {
       httpStatus: 429,
@@ -301,29 +359,60 @@ export async function handleKitRequest(
     };
   }
 
+  // 4. Verify confirmed anchors server-side
+  const searchFn = deps.searchEntity ?? defaultSearchEntity;
+  let verifiedAnchors: VerifiedAnchor[] = [];
+  if (req.confirmedAnchors && req.confirmedAnchors.length > 0) {
+    const verification = await verifyConfirmedAnchors(
+      req.confirmedAnchors,
+      searchFn,
+    );
+    verifiedAnchors = verification.verified;
+  }
+
+  // Build ConfirmedAnchor[] for the agent from verified anchors only
+  const confirmedForAgent: ConfirmedAnchor[] = verifiedAnchors.map((va) => ({
+    entityId: va.entityId,
+    name: va.name,
+  }));
+
   let mode: "agent" | "deterministic" = "agent";
   let output: StructuredOutput | undefined;
   let runId = crypto.randomUUID();
 
-  // 4. Try the Bedrock agent
-  const agentRunner = deps.runAgent ?? defaultRunAgent;
-  const timeoutMs = deps.agentTimeoutMs ?? DEFAULT_AGENT_TIMEOUT_MS;
+  // 5. Try the Bedrock agent with cancellation support
+  const agentRunner =
+    deps.runAgent ??
+    ((input: AgentRunInput, signal?: AbortSignal) =>
+      defaultRunAgent(input, undefined, signal));
+  const timeoutMs = Math.min(
+    deps.agentTimeoutMs ?? DEFAULT_AGENT_TIMEOUT_MS,
+    remainingMs(),
+  );
+
+  const agentAc = new AbortController();
 
   try {
-    let agentTimer: ReturnType<typeof setTimeout>;
+    const agentTimer = setTimeout(() => agentAc.abort(), timeoutMs);
+
     const result = await Promise.race([
-      agentRunner({
-        city: req.city,
-        anchors: req.anchors,
-        confirmedAnchors: req.confirmedAnchors,
-      }),
+      agentRunner(
+        {
+          city: req.city,
+          anchors: req.anchors,
+          confirmedAnchors: confirmedForAgent.length > 0
+            ? confirmedForAgent
+            : undefined,
+        },
+        agentAc.signal,
+      ),
       new Promise<never>((_, reject) => {
-        agentTimer = setTimeout(
-          () => reject(new Error("Agent timeout")),
-          timeoutMs,
+        agentAc.signal.addEventListener("abort", () =>
+          reject(new Error("Agent timeout")),
+          { once: true },
         );
       }),
-    ]).finally(() => clearTimeout(agentTimer!));
+    ]).finally(() => clearTimeout(agentTimer));
 
     runId = result.runId;
 
@@ -331,7 +420,6 @@ export async function handleKitRequest(
       const check = StructuredOutputSchema.safeParse(result.output);
 
       if (!check.success) {
-        // Schema validation failed at API boundary
         return {
           httpStatus: 500,
           response: {
@@ -352,8 +440,6 @@ export async function handleKitRequest(
         };
       }
 
-      // Detect internal validation collapse: agent finalized with
-      // recommendations but builder produced empty output
       if (
         result.finalization &&
         result.finalization.recommendationCount > 0 &&
@@ -381,17 +467,49 @@ export async function handleKitRequest(
 
       output = result.output;
     } else if (result.status !== "completed") {
-      // Agent terminated without output — fall through to fallback
       throw new Error(`Agent terminated: ${result.status}`);
     }
   } catch {
+    if (!agentAc.signal.aborted) agentAc.abort();
     mode = "deterministic";
   }
 
-  // 5. Deterministic fallback
+  // 6. Deterministic fallback — only if enough time remains
   if (!output && mode === "deterministic") {
+    if (remainingMs() < FALLBACK_MIN_MS) {
+      return {
+        httpStatus: 504,
+        response: {
+          status: "error",
+          output: null,
+          error: {
+            code: "deadline_exceeded",
+            message: "Not enough time remaining for fallback discovery.",
+          },
+          meta: buildMeta({
+            runId,
+            city: req.city,
+            anchorCount: req.anchors.length,
+            mode: "deterministic",
+            durationMs: elapsed(),
+          }),
+        },
+      };
+    }
+
+    const fallbackAc = new AbortController();
+    const fallbackTimer = setTimeout(
+      () => fallbackAc.abort(),
+      remainingMs(),
+    );
+
     try {
-      output = await runFallback(req, deps);
+      output = await runFallback(
+        req,
+        verifiedAnchors,
+        deps,
+        fallbackAc.signal,
+      );
     } catch (err) {
       const msg =
         err instanceof Error ? sanitizeError(err.message) : "Unknown error";
@@ -413,10 +531,12 @@ export async function handleKitRequest(
           }),
         },
       };
+    } finally {
+      clearTimeout(fallbackTimer);
     }
   }
 
-  // 6. Default empty if agent completed but produced no output
+  // 7. Default empty if agent completed but produced no output
   if (!output) {
     output = {
       status: "empty",
@@ -440,7 +560,6 @@ export async function handleKitRequest(
     }),
   };
 
-  // 7. Cache only validated successful outputs (not errors)
   setCache(cacheKey, kitResponse);
 
   return { httpStatus: 200, response: kitResponse };

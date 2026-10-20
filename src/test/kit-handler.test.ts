@@ -7,8 +7,9 @@ import {
   clearResponseCache,
   clearRateLimits,
   checkRateLimit,
+  verifyConfirmedAnchors,
 } from "../lib/api";
-import type { KitHandlerDeps } from "../lib/api";
+import type { KitHandlerDeps, VerifiedAnchor } from "../lib/api";
 import type { AgentRunResult } from "../lib/agent";
 import type { StructuredOutput, StructuredRecommendation } from "../lib/output";
 import type { DiscoveryCandidate } from "../lib/discover";
@@ -120,7 +121,7 @@ function makeTimeoutAgent(): KitHandlerDeps["runAgent"] {
   return () => new Promise(() => {}); // never resolves
 }
 
-function makeSearchEntity(): KitHandlerDeps["searchEntity"] {
+function makeSearchEntity(): NonNullable<KitHandlerDeps["searchEntity"]> {
   return async (query: string) => ({
     data: {
       results: [
@@ -281,6 +282,8 @@ describe("handleKitRequest — entity confirmation boundary", () => {
       confirmedAnchors: Array.from({ length: 6 }, (_, i) => ({
         entityId: `E-${i}`,
         name: `Entity ${i}`,
+        query: `Query ${i}`,
+        type: "urn:entity:artist",
       })),
     };
     const { httpStatus, response } = await handleKitRequest(
@@ -296,7 +299,20 @@ describe("handleKitRequest — entity confirmation boundary", () => {
       {
         city: "Berlin",
         anchors: [{ query: "Radiohead", type: "urn:entity:artist" }],
-        confirmedAnchors: [{ entityId: "", name: "Bad" }],
+        confirmedAnchors: [{ entityId: "", name: "Bad", query: "Bad", type: "urn:entity:artist" }],
+      },
+      "test-client",
+    );
+    assert.equal(httpStatus, 400);
+    assert.equal(response.error?.code, "invalid_request");
+  });
+
+  it("confirmedAnchors missing query field is rejected", async () => {
+    const { httpStatus, response } = await handleKitRequest(
+      {
+        city: "Berlin",
+        anchors: [{ query: "Radiohead", type: "urn:entity:artist" }],
+        confirmedAnchors: [{ entityId: "E-1", name: "Radiohead" }],
       },
       "test-client",
     );
@@ -419,7 +435,6 @@ describe("handleKitRequest — cache: validated outputs only", () => {
     );
     assert.equal(httpStatus, 400);
 
-    // Same invalid request should still fail (not cached)
     const { httpStatus: h2 } = await handleKitRequest(
       { city: "" },
       "c1",
@@ -459,7 +474,10 @@ describe("buildCacheKey — input sensitivity", () => {
     const k1 = buildCacheKey({
       city: "Berlin",
       anchors: [{ query: "Radiohead", type: "urn:entity:artist" }],
-      confirmedAnchors: [{ entityId: "R-1", name: "Radiohead" }],
+      confirmedAnchors: [{
+        entityId: "R-1", name: "Radiohead",
+        query: "Radiohead", type: "urn:entity:artist",
+      }],
     });
     const k2 = buildCacheKey({
       city: "Berlin",
@@ -520,9 +538,8 @@ describe("handleKitRequest — rate limiting", () => {
       },
     };
 
-    // Exhaust rate limit (10 requests)
     for (let i = 0; i < 10; i++) {
-      clearResponseCache(); // prevent cache hits from skipping rate tracking
+      clearResponseCache();
       const r = await handleKitRequest(
         { city: `City${i}`, anchors: [{ query: "Radiohead", type: "urn:entity:artist" }] },
         "rate-test",
@@ -531,7 +548,6 @@ describe("handleKitRequest — rate limiting", () => {
       assert.equal(r.httpStatus, 200);
     }
 
-    // 11th request should be rate limited
     const { httpStatus, response } = await handleKitRequest(
       VALID_REQUEST,
       "rate-test",
@@ -556,7 +572,6 @@ describe("handleKitRequest — rate limiting", () => {
       );
     }
 
-    // Client B should not be rate limited
     const { httpStatus } = await handleKitRequest(
       VALID_REQUEST,
       "client-B",
@@ -591,7 +606,7 @@ describe("handleKitRequest — graceful degradation", () => {
       {
         ...fallbackDeps(),
         runAgent: makeTimeoutAgent(),
-        agentTimeoutMs: 50, // very short timeout for testing
+        agentTimeoutMs: 50,
       },
     );
 
@@ -770,12 +785,23 @@ describe("KitRequestSchema — input validation", () => {
     assert.ok(result.success);
   });
 
-  it("accepts a request with confirmedAnchors", () => {
+  it("accepts a request with confirmedAnchors (query+type required)", () => {
+    const result = KitRequestSchema.safeParse({
+      ...VALID_REQUEST,
+      confirmedAnchors: [{
+        entityId: "R-1", name: "Radiohead",
+        query: "Radiohead", type: "urn:entity:artist",
+      }],
+    });
+    assert.ok(result.success);
+  });
+
+  it("rejects confirmedAnchors without query field", () => {
     const result = KitRequestSchema.safeParse({
       ...VALID_REQUEST,
       confirmedAnchors: [{ entityId: "R-1", name: "Radiohead" }],
     });
-    assert.ok(result.success);
+    assert.ok(!result.success);
   });
 
   it("rejects city over 100 characters", () => {
@@ -799,8 +825,6 @@ describe("KitRequestSchema — input validation", () => {
 });
 
 // ── 16. All P3 tests still pass (verified by npm test) ───────
-// This is verified by running `npm test` which includes all
-// existing test files. No separate test needed here.
 
 // ── Additional: checkRateLimit unit behavior ─────────────────
 
@@ -818,5 +842,339 @@ describe("checkRateLimit — sliding window", () => {
     }
     assert.equal(checkRateLimit("client-X"), true);
     assert.equal(checkRateLimit("client-Y"), false);
+  });
+});
+
+// ══════════════════════════════════════════════════════════════
+// NEW: Confirmed anchor server-side verification
+// ══════════════════════════════════════════════════════════════
+
+describe("verifyConfirmedAnchors — server-side verification", () => {
+  it("rejects an invented entity ID not in Qloo search results", async () => {
+    const search = makeSearchEntity();
+    const result = await verifyConfirmedAnchors(
+      [{
+        entityId: "FAKE-999",
+        name: "Fake Entity",
+        query: "Radiohead",
+        type: "urn:entity:artist",
+      }],
+      search,
+    );
+    assert.equal(result.verified.length, 0);
+    assert.equal(result.rejected.length, 1);
+    assert.equal(result.rejected[0].entityId, "FAKE-999");
+    assert.equal(result.rejected[0].reason, "id_not_in_results");
+  });
+
+  it("accepts a valid entity ID found in Qloo search results", async () => {
+    const search = makeSearchEntity();
+    const result = await verifyConfirmedAnchors(
+      [{
+        entityId: "E-Radiohead",
+        name: "Radiohead",
+        query: "Radiohead",
+        type: "urn:entity:artist",
+      }],
+      search,
+    );
+    assert.equal(result.verified.length, 1);
+    assert.equal(result.rejected.length, 0);
+    assert.equal(result.verified[0].entityId, "E-Radiohead");
+    assert.equal(result.verified[0].name, "Radiohead");
+  });
+
+  it("uses Qloo's name, not the client-provided name", async () => {
+    const search: NonNullable<KitHandlerDeps["searchEntity"]> = async (query: string) => ({
+      data: {
+        results: [
+          {
+            name: "Radiohead (Official)",
+            entity_id: "E-Radiohead",
+            types: ["urn:entity:artist"],
+          },
+        ],
+      },
+      meta: { path: "/search", params: { query }, cached: false },
+    });
+    const result = await verifyConfirmedAnchors(
+      [{
+        entityId: "E-Radiohead",
+        name: "My Custom Name",
+        query: "Radiohead",
+        type: "urn:entity:artist",
+      }],
+      search!,
+    );
+    assert.equal(result.verified.length, 1);
+    assert.equal(result.verified[0].name, "Radiohead (Official)");
+    assert.notEqual(result.verified[0].name, "My Custom Name");
+  });
+
+  it("rejects entity ID when type does not match", async () => {
+    const search: NonNullable<KitHandlerDeps["searchEntity"]> = async (query: string) => ({
+      data: {
+        results: [
+          {
+            name: "Radiohead",
+            entity_id: "E-Radiohead",
+            types: ["urn:entity:artist"],
+          },
+        ],
+      },
+      meta: { path: "/search", params: { query }, cached: false },
+    });
+    const result = await verifyConfirmedAnchors(
+      [{
+        entityId: "E-Radiohead",
+        name: "Radiohead",
+        query: "Radiohead",
+        type: "urn:entity:tv_show",
+      }],
+      search!,
+    );
+    assert.equal(result.verified.length, 0);
+    assert.equal(result.rejected.length, 1);
+    assert.equal(result.rejected[0].reason, "type_not_found");
+  });
+
+  it("rejects when search fails", async () => {
+    const search: NonNullable<KitHandlerDeps["searchEntity"]> = async () => {
+      throw new Error("network error");
+    };
+    const result = await verifyConfirmedAnchors(
+      [{
+        entityId: "E-Radiohead",
+        name: "Radiohead",
+        query: "Radiohead",
+        type: "urn:entity:artist",
+      }],
+      search!,
+    );
+    assert.equal(result.verified.length, 0);
+    assert.equal(result.rejected[0].reason, "search_failed");
+  });
+});
+
+describe("handleKitRequest — confirmed anchor verification in handler", () => {
+  it("invented entity ID is dropped before agent receives it", async () => {
+    let receivedInput: unknown;
+    const agent: KitHandlerDeps["runAgent"] = async (input) => {
+      receivedInput = input;
+      return makeAgentResult();
+    };
+
+    await handleKitRequest(
+      {
+        city: "Berlin",
+        anchors: [{ query: "Radiohead", type: "urn:entity:artist" }],
+        confirmedAnchors: [{
+          entityId: "FAKE-999",
+          name: "Fake",
+          query: "Radiohead",
+          type: "urn:entity:artist",
+        }],
+      },
+      "test-client",
+      { runAgent: agent, searchEntity: makeSearchEntity() },
+    );
+
+    const input = receivedInput as { confirmedAnchors?: unknown[] };
+    assert.ok(!input.confirmedAnchors || input.confirmedAnchors.length === 0);
+  });
+
+  it("verified anchor uses Qloo name in agent input", async () => {
+    let receivedInput: unknown;
+    const search: KitHandlerDeps["searchEntity"] = async (query: string) => ({
+      data: {
+        results: [
+          {
+            name: "Radiohead (Verified)",
+            entity_id: "E-Radiohead",
+            types: ["urn:entity:artist"],
+          },
+        ],
+      },
+      meta: { path: "/search", params: { query }, cached: false },
+    });
+    const agent: KitHandlerDeps["runAgent"] = async (input) => {
+      receivedInput = input;
+      return makeAgentResult();
+    };
+
+    await handleKitRequest(
+      {
+        city: "Berlin",
+        anchors: [{ query: "Radiohead", type: "urn:entity:artist" }],
+        confirmedAnchors: [{
+          entityId: "E-Radiohead",
+          name: "Client Name",
+          query: "Radiohead",
+          type: "urn:entity:artist",
+        }],
+      },
+      "test-client",
+      { runAgent: agent, searchEntity: search },
+    );
+
+    const input = receivedInput as { confirmedAnchors?: { entityId: string; name: string }[] };
+    assert.ok(input.confirmedAnchors);
+    assert.equal(input.confirmedAnchors.length, 1);
+    assert.equal(input.confirmedAnchors[0].name, "Radiohead (Verified)");
+  });
+
+  it("both agent and deterministic fallback use verified anchors", async () => {
+    let fallbackAnchors: string[] = [];
+    const search: KitHandlerDeps["searchEntity"] = async (query: string) => ({
+      data: {
+        results: [
+          {
+            name: "Radiohead (Verified)",
+            entity_id: "E-Radiohead",
+            types: ["urn:entity:artist"],
+          },
+        ],
+      },
+      meta: { path: "/search", params: { query }, cached: false },
+    });
+    const discover: KitHandlerDeps["discover"] = async (input) => {
+      fallbackAnchors = input.anchors.map((a) => a.name);
+      return {
+        city: input.city,
+        accepted: [makeFallbackCandidate()],
+        review: [],
+        rejected: [],
+        failures: [],
+        budget: { queriesUsed: 2, queriesBudget: 2, totalResults: 1 },
+      };
+    };
+
+    await handleKitRequest(
+      {
+        city: "Berlin",
+        anchors: [{ query: "Radiohead", type: "urn:entity:artist" }],
+        confirmedAnchors: [{
+          entityId: "E-Radiohead",
+          name: "Client Name",
+          query: "Radiohead",
+          type: "urn:entity:artist",
+        }],
+      },
+      "test-client",
+      { runAgent: makeFailingAgent(), searchEntity: search, discover },
+    );
+
+    assert.ok(fallbackAnchors.includes("Radiohead (Verified)"));
+    assert.ok(!fallbackAnchors.includes("Client Name"));
+  });
+});
+
+// ══════════════════════════════════════════════════════════════
+// NEW: Agent timeout cancellation
+// ══════════════════════════════════════════════════════════════
+
+describe("handleKitRequest — agent timeout cancellation", () => {
+  it("aborts the agent signal when timeout fires", async () => {
+    let receivedSignal: AbortSignal | undefined;
+    const slowAgent: KitHandlerDeps["runAgent"] = async (_input, signal) => {
+      receivedSignal = signal;
+      return new Promise(() => {}); // never resolves
+    };
+
+    await handleKitRequest(
+      VALID_REQUEST,
+      "test-client",
+      {
+        ...fallbackDeps(),
+        runAgent: slowAgent,
+        agentTimeoutMs: 50,
+      },
+    );
+
+    assert.ok(receivedSignal, "agent should receive a signal");
+    assert.ok(receivedSignal!.aborted, "signal should be aborted after timeout");
+  });
+
+  it("fallback runs with its own independent signal after agent abort", async () => {
+    let fallbackSignal: AbortSignal | undefined;
+    const discover: KitHandlerDeps["discover"] = async (input) => {
+      fallbackSignal = input.signal;
+      return {
+        city: input.city,
+        accepted: [makeFallbackCandidate()],
+        review: [],
+        rejected: [],
+        failures: [],
+        budget: { queriesUsed: 1, queriesBudget: 1, totalResults: 1 },
+      };
+    };
+
+    const { response, httpStatus } = await handleKitRequest(
+      VALID_REQUEST,
+      "test-client",
+      {
+        runAgent: makeTimeoutAgent(),
+        agentTimeoutMs: 50,
+        searchEntity: makeSearchEntity(),
+        discover,
+      },
+    );
+
+    assert.equal(httpStatus, 200);
+    assert.equal(response.meta.mode, "deterministic");
+    assert.ok(fallbackSignal, "fallback should receive its own signal");
+    assert.ok(!fallbackSignal!.aborted, "fallback signal should NOT be aborted");
+  });
+});
+
+// ══════════════════════════════════════════════════════════════
+// NEW: Handler deadline enforcement
+// ══════════════════════════════════════════════════════════════
+
+describe("handleKitRequest — handler deadline", () => {
+  it("returns deadline_exceeded when no time left for fallback", async () => {
+    const { response, httpStatus } = await handleKitRequest(
+      VALID_REQUEST,
+      "test-client",
+      {
+        runAgent: makeFailingAgent(),
+        searchEntity: makeSearchEntity(),
+        discover: makeDiscover(),
+        handlerDeadlineMs: 1, // extremely short deadline — already expired
+        agentTimeoutMs: 1,
+      },
+    );
+
+    assert.equal(httpStatus, 504);
+    assert.equal(response.status, "error");
+    assert.equal(response.error?.code, "deadline_exceeded");
+  });
+
+  it("agent timeout is clamped to remaining deadline", async () => {
+    let agentStarted = false;
+    const agent: KitHandlerDeps["runAgent"] = async (_input, signal) => {
+      agentStarted = true;
+      return new Promise((_, reject) => {
+        signal?.addEventListener("abort", () =>
+          reject(new Error("aborted")),
+        );
+      });
+    };
+
+    const start = Date.now();
+    await handleKitRequest(
+      VALID_REQUEST,
+      "test-client",
+      {
+        ...fallbackDeps(),
+        runAgent: agent,
+        agentTimeoutMs: 60_000,
+        handlerDeadlineMs: 200,
+      },
+    );
+    const elapsed = Date.now() - start;
+
+    assert.ok(agentStarted);
+    assert.ok(elapsed < 5_000, `should finish quickly, took ${elapsed}ms`);
   });
 });
