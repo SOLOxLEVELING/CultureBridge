@@ -22,7 +22,7 @@ export type {
   FinalizeArgs,
 } from "./tool-specs";
 
-export { dispatchToolCall } from "./tool-dispatch";
+export { dispatchToolCall, candidateToEntry } from "./tool-dispatch";
 export type {
   ToolDeps,
   ToolResult,

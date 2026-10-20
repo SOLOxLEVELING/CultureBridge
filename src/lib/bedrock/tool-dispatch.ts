@@ -243,7 +243,7 @@ async function executeResolveAnchor(
   return { status: "not_found", requestedType: args.type };
 }
 
-function candidateToEntry(
+export function candidateToEntry(
   candidate: DiscoveryCandidate,
 ): DiscoverPlacesResultEntry {
   const rec = assignLabel(candidate);
