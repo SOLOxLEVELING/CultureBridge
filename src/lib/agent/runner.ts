@@ -14,9 +14,12 @@ import type {
   ToolExecutionOutcome,
   ResolveAnchorResult,
   DiscoverPlacesResult,
+  DiscoverPlacesResultEntry,
   FindTagsResult,
   FinalizeResult,
 } from "../bedrock";
+import { buildStructuredOutput } from "../output";
+import type { StructuredOutput } from "../output";
 import {
   searchEntity as realSearchEntity,
   searchTags as realSearchTags,
@@ -122,6 +125,7 @@ export interface AgentRunResult {
     recommendationIds: string[];
     recommendationCount: number;
   };
+  output?: StructuredOutput;
   trace: TraceEvent[];
   toolCallCount: number;
   qlooOutboundRequests: number;
@@ -181,7 +185,7 @@ class QlooBudgetTracker {
 interface TrustedState {
   city: string;
   confirmedAnchors: Map<string, ConfirmedAnchor>;
-  acceptedRecommendations: Map<string, { name: string; label: string }>;
+  acceptedRecommendations: Map<string, DiscoverPlacesResultEntry>;
 }
 
 // ── Helpers ────────────────────────────────────────────────────
@@ -929,6 +933,7 @@ export async function runAgent(
 
   let toolCallCount = 0;
   let finalization: AgentRunResult["finalization"] | undefined;
+  let structuredOutput: StructuredOutput | undefined;
   let terminationReason: TerminationReason | undefined;
   const fallbackTracker = new FallbackTracker();
 
@@ -1387,10 +1392,7 @@ export async function runAgent(
           // Register accepted recommendations from bestResult
           for (const e of bestResult.accepted) {
             if (e.recommendation) {
-              trusted.acceptedRecommendations.set(e.entityId, {
-                name: e.name,
-                label: e.recommendation.label,
-              });
+              trusted.acceptedRecommendations.set(e.entityId, e);
             }
           }
 
@@ -1468,6 +1470,12 @@ export async function runAgent(
             recommendationIds: validIds,
             recommendationCount: validIds.length,
           };
+          structuredOutput = buildStructuredOutput(
+            r.summary,
+            validIds,
+            invalidIds,
+            trusted.acceptedRecommendations,
+          );
           terminationReason = "completed";
           emit({
             timestamp: new Date(dt0).toISOString(),
@@ -1559,6 +1567,7 @@ export async function runAgent(
     runId,
     status: terminationReason,
     finalization,
+    output: structuredOutput,
     trace,
     toolCallCount,
     qlooOutboundRequests: budget.outbound,

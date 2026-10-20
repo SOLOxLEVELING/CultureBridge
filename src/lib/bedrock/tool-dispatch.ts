@@ -45,6 +45,12 @@ export interface DiscoverPlacesResultEntry {
   address: string | null;
   neighborhood: string | null;
   website: string | null;
+  phone?: string | null;
+  priceLevel?: number | null;
+  location?: { lat: number; lon: number } | null;
+  mappable?: boolean;
+  tags?: { id: string; name: string; type: string }[];
+  sourceQueryTypes?: ("single-anchor" | "blended")[];
 }
 
 export interface DiscoverPlacesResult {
@@ -245,6 +251,11 @@ function candidateToEntry(
   const categoryTag = tags.find((t) =>
     t.id.startsWith("urn:tag:category:place:"),
   );
+  const loc = candidate.entity.location;
+  const validLocation =
+    loc?.lat != null && loc?.lon != null
+      ? { lat: loc.lat, lon: loc.lon }
+      : null;
   return {
     entityId: candidate.entityId,
     name: candidate.name,
@@ -253,6 +264,12 @@ function candidateToEntry(
     address: candidate.entity.properties?.address ?? null,
     neighborhood: candidate.entity.properties?.neighborhood ?? null,
     website: candidate.entity.properties?.website ?? null,
+    phone: candidate.entity.properties?.phone ?? null,
+    priceLevel: candidate.entity.properties?.price_level ?? null,
+    location: validLocation,
+    mappable: candidate.validation.mappable,
+    tags: tags.map((t) => ({ id: t.id, name: t.name, type: t.type })),
+    sourceQueryTypes: [...new Set(candidate.sources.map((s) => s.queryType))],
   };
 }
 

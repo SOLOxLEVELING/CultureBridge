@@ -16,3 +16,11 @@ export type {
   AgentRunResult,
   AgentRunnerDeps,
 } from "./runner";
+export type {
+  StructuredOutput,
+  StructuredRecommendation,
+  PlaceDetails,
+  RecommendationProvenance,
+  ExplanationBasis,
+  VerifiedExplanation,
+} from "../output";
