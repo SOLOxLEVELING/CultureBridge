@@ -321,6 +321,30 @@ describe("1. Evidence labels and grounded provenance distinction", () => {
       ),
       false,
     );
+
+    // Must accurately describe general screening checks (accommodation, transit, closed, duplicate listings)
+    assert.ok(
+      successPres.scopeNote.includes(
+        "excluding flagged accommodation, transit, closed, and duplicate listings",
+      ),
+    );
+    // Must not claim that general screening unconditionally excludes category conflicts across all queries
+    assert.equal(
+      successPres.scopeNote.includes("closed listings, and category conflicts"),
+      false,
+    );
+    // Must explain that category-conflict checks apply only when category evidence was explicitly evaluated
+    assert.ok(
+      successPres.scopeNote.includes(
+        "Category-conflict checks apply only to recommendations for which category evidence was explicitly evaluated",
+      ),
+    );
+    // Must not imply that all Qloo category tags are independently validated
+    assert.ok(
+      successPres.scopeNote.includes(
+        "Qloo category tags are not all independently validated",
+      ),
+    );
     assert.ok(
       successPres.scopeNote.includes(
         "does not independently verify current operating status, hours, or real-world affiliations",

@@ -73,7 +73,7 @@ export const KIT_STATUS_PRESENTATION: Record<
     status: "success",
     badgeText: "Starter Kit Ready",
     scopeNote:
-      "Places passed Qloo taste-graph lookup and deterministic screening (excluding flagged hotels, transit hubs, closed listings, and category conflicts). CultureBridge does not independently verify current operating status, hours, or real-world affiliations.",
+      "Places passed Qloo taste-graph lookup and general deterministic screening (excluding flagged accommodation, transit, closed, and duplicate listings). Category-conflict checks apply only to recommendations for which category evidence was explicitly evaluated; Qloo category tags are not all independently validated, and CultureBridge does not independently verify current operating status, hours, or real-world affiliations.",
     badgeClassName:
       "border-emerald-600/30 bg-emerald-500/10 text-emerald-800 dark:text-emerald-300",
   },
