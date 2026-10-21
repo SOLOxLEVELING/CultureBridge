@@ -123,7 +123,10 @@ const RATE_LIMIT = 10;
 
 const rateBuckets = new Map<string, number[]>();
 
-export function checkRateLimit(clientId: string): boolean {
+export function checkRateLimit(
+  clientId: string,
+  limit: number = RATE_LIMIT,
+): boolean {
   const now = Date.now();
   let timestamps = rateBuckets.get(clientId);
   if (!timestamps) {
@@ -133,7 +136,7 @@ export function checkRateLimit(clientId: string): boolean {
   while (timestamps.length > 0 && now - timestamps[0] >= RATE_WINDOW_MS) {
     timestamps.shift();
   }
-  if (timestamps.length >= RATE_LIMIT) return true;
+  if (timestamps.length >= limit) return true;
   timestamps.push(now);
   return false;
 }
