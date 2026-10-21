@@ -48,6 +48,9 @@ export {
 export type {
   AnchorItemStatus,
   AnchorItem,
+  SafeConnectionProvenance,
+  SafeCategoryEvidence,
+  SafeTagInfo,
   SafeRecommendationItem,
   SafeKitCompletion,
   GenerationState,
@@ -56,3 +59,33 @@ export type {
   FlowTransitionResult,
   KitSubmissionController,
 } from "./flow";
+
+export {
+  LABEL_PRESENTATION,
+  getLabelPresentation,
+  KIT_STATUS_PRESENTATION,
+  getKitStatusPresentation,
+  describeCategoryEvidence,
+  formatRecommendationProvenance,
+  formatPriceTier,
+  isMappableRecommendation,
+  buildPracticalDetailsView,
+  UNCATEGORIZED_GROUP_KEY,
+  UNCATEGORIZED_GROUP_TITLE,
+  groupRecommendationsByCategory,
+  extractMapMarkers,
+  computeMapBounds,
+  resolveSelectionState,
+} from "./results-view";
+export type {
+  LabelPresentation,
+  KitStatusPresentation,
+  CategoryEvidenceView,
+  ProvenanceDistinctionKind,
+  ProvenancePresentation,
+  PracticalDetailsView,
+  CategoryRecommendationGroup,
+  MapMarkerItem,
+  MapViewportSpec,
+  SelectionState,
+} from "./results-view";

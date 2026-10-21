@@ -1,12 +1,13 @@
 "use client";
 
-import { useId, useRef, useState } from "react";
+import dynamic from "next/dynamic";
+import { useId, useMemo, useRef, useState } from "react";
 import type { FormEvent } from "react";
 import type { AnchorSearchResponse } from "@/lib/api";
-import type { RecommendationLabel } from "@/lib/recommend";
 import {
   ANCHOR_TYPE_META,
   CITY_META,
+  LABEL_PRESENTATION,
   MAX_TRUSTED_ANCHORS,
   PERSONA_PRESETS,
   SUPPORTED_ANCHOR_TYPES,
@@ -17,13 +18,21 @@ import {
   applyKitGenerationError,
   applyKitGenerationResponse,
   buildKitRequestPayload,
+  buildPracticalDetailsView,
   canGenerateKit,
   confirmAnchorCandidate,
   createInitialFlowState,
   deriveFlowPhase,
+  describeCategoryEvidence,
+  extractMapMarkers,
   formatAnchorType,
+  formatRecommendationProvenance,
+  getKitStatusPresentation,
+  getLabelPresentation,
   getPresetById,
+  groupRecommendationsByCategory,
   removeAnchor,
+  resolveSelectionState,
   selectCity,
   selectPreset,
   setAnchorEditing,
@@ -41,6 +50,20 @@ import type {
   SafeRecommendationItem,
   SupportedAnchorType,
 } from "@/lib/input";
+import { AgentTraceDrawer } from "./agent-trace-drawer";
+
+const ResultsMap = dynamic(() => import("./results-map"), {
+  ssr: false,
+  loading: () => (
+    <div
+      role="status"
+      aria-live="polite"
+      className="flex h-60 w-full items-center justify-center rounded-lg border border-foreground/15 bg-foreground/[0.02] p-6 text-xs text-foreground/60 sm:h-72 lg:h-80"
+    >
+      Loading OpenStreetMap view…
+    </div>
+  ),
+});
 
 const FLOW_PHASE_LABELS: Record<
   FlowPhase,
@@ -83,41 +106,17 @@ const FLOW_PHASE_LABELS: Record<
   success: {
     badge: "Starter Kit ready",
     instruction:
-      "Review your verified recommendations below, or adjust your anchors to explore further.",
+      "Review your recommendations, map pins, and search process below, or edit your anchors to revise the kit.",
   },
   empty_recommendations: {
     badge: "No matches found",
     instruction:
-      "No verified places met the evidence threshold for this combination. Try adjusting your anchors or destination.",
+      "No places met the deterministic screening criteria for this combination. Try adjusting your anchors or destination.",
   },
   generation_error: {
     badge: "Generation failed",
     instruction:
       "Your profile, destination city, and confirmed anchors are preserved. Retry whenever you are ready.",
-  },
-};
-
-const LABEL_STYLES: Record<
-  RecommendationLabel,
-  { bg: string; text: string; border: string; display: string }
-> = {
-  connection: {
-    bg: "bg-emerald-500/10",
-    text: "text-emerald-700 dark:text-emerald-400",
-    border: "border-emerald-500/20",
-    display: "Connection",
-  },
-  "useful-place": {
-    bg: "bg-foreground/[0.06]",
-    text: "text-foreground/80",
-    border: "border-foreground/15",
-    display: "Useful place",
-  },
-  exploratory: {
-    bg: "bg-foreground/[0.03]",
-    text: "text-foreground/60",
-    border: "border-foreground/10",
-    display: "Exploratory",
   },
 };
 
@@ -128,11 +127,15 @@ export function StarterKitFlow() {
   const [newQuery, setNewQuery] = useState<string>("");
   const [newType, setNewType] =
     useState<SupportedAnchorType>("urn:entity:artist");
+  const [isErrorTraceOpen, setIsErrorTraceOpen] = useState<boolean>(false);
 
   // Synchronous lock to prevent accidental duplicate /api/kit submissions
   const kitSubmittingRef = useRef<boolean>(false);
   const stateRef = useRef<FlowState>(state);
   stateRef.current = state;
+
+  const anchorsSectionRef = useRef<HTMLElement | null>(null);
+  const resultsSectionRef = useRef<HTMLElement | null>(null);
 
   const baseId = useId();
   const phase = deriveFlowPhase(state);
@@ -147,6 +150,13 @@ export function StarterKitFlow() {
     (a) => a.status === "unsearched",
   );
   const isReady = canGenerateKit(state);
+
+  function focusAnchorsEditor() {
+    anchorsSectionRef.current?.scrollIntoView({
+      behavior: "smooth",
+      block: "start",
+    });
+  }
 
   // ── Lookup actions ─────────────────────────────────────────
 
@@ -323,6 +333,7 @@ export function StarterKitFlow() {
 
     kitSubmittingRef.current = true;
     setFormError(null);
+    setIsErrorTraceOpen(false);
     setState(started.state);
 
     try {
@@ -343,8 +354,8 @@ export function StarterKitFlow() {
   return (
     <div className="min-h-screen bg-background text-foreground">
       {/* Persistent Top Workspace Bar */}
-      <header className="sticky top-0 z-10 border-b border-foreground/10 bg-background/95 backdrop-blur">
-        <div className="mx-auto flex max-w-3xl flex-wrap items-center justify-between gap-3 px-4 py-3.5 sm:px-6">
+      <header className="sticky top-0 z-20 border-b border-foreground/10 bg-background/95 backdrop-blur">
+        <div className="mx-auto flex max-w-5xl flex-wrap items-center justify-between gap-3 px-4 py-3.5 sm:px-6">
           <div className="flex items-center gap-3">
             <h1 className="text-base font-semibold tracking-tight">
               CultureBridge
@@ -360,7 +371,8 @@ export function StarterKitFlow() {
 
           <div className="flex items-center gap-2.5 text-xs">
             <span className="rounded border border-foreground/15 bg-foreground/[0.03] px-2 py-1 font-mono text-foreground/80">
-              Destination: <strong className="font-semibold">{state.city}</strong>
+              Destination:{" "}
+              <strong className="font-semibold">{state.city}</strong>
             </span>
             <span
               role="status"
@@ -373,412 +385,455 @@ export function StarterKitFlow() {
         </div>
       </header>
 
-      <main className="mx-auto max-w-3xl space-y-8 px-4 py-6 sm:px-6 sm:py-10">
-        {/* Intro & Live Workflow Status Banner */}
-        <section aria-label="Workflow overview" className="space-y-3">
-          <div className="flex flex-col gap-1 sm:flex-row sm:items-baseline sm:justify-between">
-            <h2 className="text-xl font-semibold tracking-tight sm:text-2xl">
-              Discover places in {state.city} through what you already know
-            </h2>
-            <span className="inline-flex w-fit items-center gap-1.5 rounded border border-foreground/15 px-2 py-0.5 font-mono text-xs text-foreground/70">
-              <PhaseIndicatorDot phase={phase} />
-              {phaseMeta.badge}
-            </span>
-          </div>
-          <p className="text-sm text-foreground/65" aria-live="polite">
-            {phaseMeta.instruction}
-          </p>
-        </section>
+      <main className="mx-auto max-w-5xl space-y-8 px-4 py-6 sm:px-6 sm:py-10">
+        {/* Input Workspace Container */}
+        <div className="mx-auto max-w-3xl space-y-8">
+          {/* Intro & Live Workflow Status Banner */}
+          <section aria-label="Workflow overview" className="space-y-3">
+            <div className="flex flex-col gap-1 sm:flex-row sm:items-baseline sm:justify-between">
+              <h2 className="text-xl font-semibold tracking-tight sm:text-2xl">
+                Discover places in {state.city} through what you already know
+              </h2>
+              <span className="inline-flex w-fit items-center gap-1.5 rounded border border-foreground/15 px-2 py-0.5 font-mono text-xs text-foreground/70">
+                <PhaseIndicatorDot phase={phase} />
+                {phaseMeta.badge}
+              </span>
+            </div>
+            <p className="text-sm text-foreground/65" aria-live="polite">
+              {phaseMeta.instruction}
+            </p>
+          </section>
 
-        {/* Step 1: Destination City Selector */}
-        <section
-          aria-labelledby={`${baseId}-city-heading`}
-          className="space-y-3"
-        >
-          <div className="flex items-baseline justify-between">
-            <h3
-              id={`${baseId}-city-heading`}
-              className="text-sm font-medium text-foreground"
-            >
-              1. Destination city
-            </h3>
-            <span className="text-xs text-foreground/50">
-              Tested Qloo locality coverage
-            </span>
-          </div>
-
-          <div
-            role="group"
+          {/* Step 1: Destination City Selector */}
+          <section
             aria-labelledby={`${baseId}-city-heading`}
-            className="grid grid-cols-1 gap-2.5 sm:grid-cols-2"
+            className="space-y-3"
           >
-            {TESTED_CITIES.map((cityOption) => {
-              const selected = state.city === cityOption;
-              const meta = CITY_META[cityOption];
-              return (
-                <button
-                  key={cityOption}
-                  type="button"
-                  aria-pressed={selected}
-                  disabled={isGenerating}
-                  onClick={() => handleSelectCity(cityOption)}
-                  className={`flex flex-col items-start rounded-lg border p-3.5 text-left transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-foreground disabled:cursor-not-allowed disabled:opacity-50 ${
-                    selected
-                      ? "border-foreground bg-foreground/[0.04]"
-                      : "border-foreground/12 hover:border-foreground/30 hover:bg-foreground/[0.015]"
-                  }`}
-                >
-                  <div className="flex w-full items-center justify-between gap-2">
-                    <span className="text-sm font-semibold">
-                      {meta.name}{" "}
-                      <span className="font-normal text-foreground/50">
-                        · {meta.country}
-                      </span>
-                    </span>
-                    <span
-                      className={`h-2 w-2 rounded-full ${
-                        selected ? "bg-foreground" : "border border-foreground/30"
-                      }`}
-                      aria-hidden="true"
-                    />
-                  </div>
-                  <p className="mt-1 text-xs text-foreground/60">{meta.note}</p>
-                </button>
-              );
-            })}
-          </div>
-        </section>
-
-        {/* Step 2: Persona Preset Selector */}
-        <section
-          aria-labelledby={`${baseId}-persona-heading`}
-          className="space-y-3"
-        >
-          <div className="flex items-baseline justify-between">
-            <h3
-              id={`${baseId}-persona-heading`}
-              className="text-sm font-medium text-foreground"
-            >
-              2. Starting taste profile
-            </h3>
-            <span className="text-xs text-foreground/50">
-              Select a preset or build a custom list
-            </span>
-          </div>
-
-          <div
-            role="group"
-            aria-labelledby={`${baseId}-persona-heading`}
-            className="grid grid-cols-1 gap-2 sm:grid-cols-2"
-          >
-            {PERSONA_PRESETS.map((preset) => {
-              const selected = state.selectedPresetId === preset.id;
-              return (
-                <button
-                  key={preset.id}
-                  type="button"
-                  aria-pressed={selected}
-                  disabled={isGenerating}
-                  onClick={() => handleSelectPreset(preset.id)}
-                  className={`flex flex-col items-start rounded-lg border p-3.5 text-left transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-foreground disabled:cursor-not-allowed disabled:opacity-50 ${
-                    selected
-                      ? "border-foreground bg-foreground/[0.04]"
-                      : "border-foreground/12 hover:border-foreground/30 hover:bg-foreground/[0.015]"
-                  }`}
-                >
-                  <div className="flex w-full items-center justify-between gap-2">
-                    <span className="text-sm font-semibold">{preset.name}</span>
-                    {preset.anchors.length > 0 ? (
-                      <span className="font-mono text-xs text-foreground/50">
-                        {preset.anchors.length} anchors
-                      </span>
-                    ) : (
-                      <span className="font-mono text-xs text-foreground/50">
-                        Blank
-                      </span>
-                    )}
-                  </div>
-                  <p className="mt-1 text-xs text-foreground/60">
-                    {preset.description}
-                  </p>
-                </button>
-              );
-            })}
-          </div>
-        </section>
-
-        {/* Step 3: Cultural Anchors & Explicit Qloo Entity Confirmation */}
-        <section
-          aria-labelledby={`${baseId}-anchors-heading`}
-          className="space-y-3"
-        >
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <div>
+            <div className="flex items-baseline justify-between">
               <h3
-                id={`${baseId}-anchors-heading`}
+                id={`${baseId}-city-heading`}
                 className="text-sm font-medium text-foreground"
               >
-                3. Cultural anchors &amp; Qloo entity confirmation
+                1. Destination city
               </h3>
-              <p className="mt-0.5 text-xs text-foreground/60">
-                Up to {MAX_TRUSTED_ANCHORS} anchors. Every anchor is searched
-                against Qloo and requires your explicit confirmation.
-              </p>
+              <span className="text-xs text-foreground/50">
+                Tested Qloo locality coverage
+              </span>
             </div>
 
-            <div className="flex flex-wrap items-center gap-2">
-              {unsearchedAnchors.length > 0 && (
-                <button
-                  type="button"
-                  disabled={isGenerating}
-                  onClick={lookupAllUnsearched}
-                  className="rounded-md bg-foreground px-3 py-1.5 text-xs font-medium text-background transition-opacity hover:opacity-90 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-foreground disabled:cursor-not-allowed disabled:opacity-50"
-                >
-                  Search Qloo for{" "}
-                  {unsearchedAnchors.length === 1
-                    ? "1 unsearched anchor"
-                    : `all ${unsearchedAnchors.length} anchors`}
-                </button>
-              )}
-
-              {state.anchors.length < MAX_TRUSTED_ANCHORS && !isAddRowOpen && (
-                <button
-                  type="button"
-                  disabled={isGenerating}
-                  onClick={() => {
-                    setFormError(null);
-                    setIsAddRowOpen(true);
-                  }}
-                  className="rounded-md border border-foreground/20 px-3 py-1.5 text-xs font-medium text-foreground transition-colors hover:bg-foreground/[0.04] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-foreground disabled:cursor-not-allowed disabled:opacity-50"
-                >
-                  + Add anchor ({state.anchors.length}/{MAX_TRUSTED_ANCHORS})
-                </button>
-              )}
-            </div>
-          </div>
-
-          {formError && (
             <div
-              role="alert"
-              className="rounded-md border border-red-500/30 bg-red-500/5 px-3.5 py-2.5 text-xs text-red-700 dark:text-red-300"
+              role="group"
+              aria-labelledby={`${baseId}-city-heading`}
+              className="grid grid-cols-1 gap-2.5 sm:grid-cols-2"
             >
-              {formError}
+              {TESTED_CITIES.map((cityOption) => {
+                const selected = state.city === cityOption;
+                const meta = CITY_META[cityOption];
+                return (
+                  <button
+                    key={cityOption}
+                    type="button"
+                    aria-pressed={selected}
+                    disabled={isGenerating}
+                    onClick={() => handleSelectCity(cityOption)}
+                    className={`flex flex-col items-start rounded-lg border p-3.5 text-left transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-foreground disabled:cursor-not-allowed disabled:opacity-50 ${
+                      selected
+                        ? "border-foreground bg-foreground/[0.04]"
+                        : "border-foreground/12 hover:border-foreground/30 hover:bg-foreground/[0.015]"
+                    }`}
+                  >
+                    <div className="flex w-full items-center justify-between gap-2">
+                      <span className="text-sm font-semibold">
+                        {meta.name}{" "}
+                        <span className="font-normal text-foreground/50">
+                          · {meta.country}
+                        </span>
+                      </span>
+                      <span
+                        className={`h-2 w-2 rounded-full ${
+                          selected
+                            ? "bg-foreground"
+                            : "border border-foreground/30"
+                        }`}
+                        aria-hidden="true"
+                      />
+                    </div>
+                    <p className="mt-1 text-xs text-foreground/60">
+                      {meta.note}
+                    </p>
+                  </button>
+                );
+              })}
             </div>
-          )}
+          </section>
 
-          {/* Anchor Rows */}
-          <div className="divide-y divide-foreground/10 rounded-lg border border-foreground/15">
-            {state.anchors.length === 0 && !isAddRowOpen && (
-              <div className="p-6 text-center">
-                <p className="text-sm font-medium text-foreground/80">
-                  No cultural anchors in {currentPreset.name}
-                </p>
-                <p className="mt-1 text-xs text-foreground/55">
-                  Add at least one artist, TV show, movie, brand, or person to
-                  discover connected places in {state.city}.
-                </p>
-                <button
-                  type="button"
-                  disabled={isGenerating}
-                  onClick={() => setIsAddRowOpen(true)}
-                  className="mt-3 rounded-md bg-foreground px-3.5 py-1.5 text-xs font-medium text-background transition-opacity hover:opacity-90"
-                >
-                  Add your first anchor
-                </button>
-              </div>
-            )}
-
-            {state.anchors.map((anchor) => (
-              <AnchorRow
-                key={anchor.id}
-                anchor={anchor}
-                disabled={isGenerating}
-                onLookup={() =>
-                  lookupSingleAnchor(anchor.id, anchor.query, anchor.type)
-                }
-                onStartEdit={() =>
-                  setState((prev) => setAnchorEditing(prev, anchor.id, true))
-                }
-                onCancelEdit={() =>
-                  setState((prev) => setAnchorEditing(prev, anchor.id, false))
-                }
-                onSaveEdit={(query, type) =>
-                  handleUpdateAnchor(anchor.id, query, type)
-                }
-                onRemove={() => handleRemoveAnchor(anchor.id)}
-                onConfirm={(entityId) =>
-                  handleConfirmCandidate(anchor.id, entityId)
-                }
-                onUnconfirm={() => handleUnconfirmAnchor(anchor.id)}
-              />
-            ))}
-
-            {/* Inline Add Anchor Form */}
-            {isAddRowOpen && state.anchors.length < MAX_TRUSTED_ANCHORS && (
-              <form
-                onSubmit={handleAddAnchorSubmit}
-                className="bg-foreground/[0.015] p-4"
+          {/* Step 2: Persona Preset Selector */}
+          <section
+            aria-labelledby={`${baseId}-persona-heading`}
+            className="space-y-3"
+          >
+            <div className="flex items-baseline justify-between">
+              <h3
+                id={`${baseId}-persona-heading`}
+                className="text-sm font-medium text-foreground"
               >
-                <div className="mb-2.5 flex items-center justify-between">
-                  <span className="text-xs font-medium text-foreground/80">
-                    Add cultural anchor ({state.anchors.length + 1} of{" "}
-                    {MAX_TRUSTED_ANCHORS})
-                  </span>
-                  {state.anchors.length > 0 && (
+                2. Starting taste profile
+              </h3>
+              <span className="text-xs text-foreground/50">
+                Select a preset or build a custom list
+              </span>
+            </div>
+
+            <div
+              role="group"
+              aria-labelledby={`${baseId}-persona-heading`}
+              className="grid grid-cols-1 gap-2 sm:grid-cols-2"
+            >
+              {PERSONA_PRESETS.map((preset) => {
+                const selected = state.selectedPresetId === preset.id;
+                return (
+                  <button
+                    key={preset.id}
+                    type="button"
+                    aria-pressed={selected}
+                    disabled={isGenerating}
+                    onClick={() => handleSelectPreset(preset.id)}
+                    className={`flex flex-col items-start rounded-lg border p-3.5 text-left transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-foreground disabled:cursor-not-allowed disabled:opacity-50 ${
+                      selected
+                        ? "border-foreground bg-foreground/[0.04]"
+                        : "border-foreground/12 hover:border-foreground/30 hover:bg-foreground/[0.015]"
+                    }`}
+                  >
+                    <div className="flex w-full items-center justify-between gap-2">
+                      <span className="text-sm font-semibold">
+                        {preset.name}
+                      </span>
+                      {preset.anchors.length > 0 ? (
+                        <span className="font-mono text-xs text-foreground/50">
+                          {preset.anchors.length} anchors
+                        </span>
+                      ) : (
+                        <span className="font-mono text-xs text-foreground/50">
+                          Blank
+                        </span>
+                      )}
+                    </div>
+                    <p className="mt-1 text-xs text-foreground/60">
+                      {preset.description}
+                    </p>
+                  </button>
+                );
+              })}
+            </div>
+          </section>
+
+          {/* Step 3: Cultural Anchors & Explicit Qloo Entity Confirmation */}
+          <section
+            ref={anchorsSectionRef}
+            aria-labelledby={`${baseId}-anchors-heading`}
+            className="scroll-mt-20 space-y-3"
+          >
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div>
+                <h3
+                  id={`${baseId}-anchors-heading`}
+                  className="text-sm font-medium text-foreground"
+                >
+                  3. Cultural anchors &amp; Qloo entity confirmation
+                </h3>
+                <p className="mt-0.5 text-xs text-foreground/60">
+                  Up to {MAX_TRUSTED_ANCHORS} anchors. Every anchor is searched
+                  against Qloo and requires your explicit confirmation.
+                </p>
+              </div>
+
+              <div className="flex flex-wrap items-center gap-2">
+                {unsearchedAnchors.length > 0 && (
+                  <button
+                    type="button"
+                    disabled={isGenerating}
+                    onClick={lookupAllUnsearched}
+                    className="rounded-md bg-foreground px-3 py-1.5 text-xs font-medium text-background transition-opacity hover:opacity-90 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-foreground disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    Search Qloo for{" "}
+                    {unsearchedAnchors.length === 1
+                      ? "1 unsearched anchor"
+                      : `all ${unsearchedAnchors.length} anchors`}
+                  </button>
+                )}
+
+                {state.anchors.length < MAX_TRUSTED_ANCHORS &&
+                  !isAddRowOpen && (
                     <button
                       type="button"
+                      disabled={isGenerating}
                       onClick={() => {
-                        setIsAddRowOpen(false);
                         setFormError(null);
+                        setIsAddRowOpen(true);
                       }}
-                      className="text-xs text-foreground/50 hover:text-foreground/80"
+                      className="rounded-md border border-foreground/20 px-3 py-1.5 text-xs font-medium text-foreground transition-colors hover:bg-foreground/[0.04] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-foreground disabled:cursor-not-allowed disabled:opacity-50"
                     >
-                      Cancel
+                      + Add anchor ({state.anchors.length}/{MAX_TRUSTED_ANCHORS}
+                      )
                     </button>
                   )}
-                </div>
-
-                <div className="flex flex-col gap-2.5 sm:flex-row">
-                  <div className="flex-1">
-                    <label
-                      htmlFor={`${baseId}-new-anchor-query`}
-                      className="sr-only"
-                    >
-                      Anchor name
-                    </label>
-                    <input
-                      id={`${baseId}-new-anchor-query`}
-                      type="text"
-                      value={newQuery}
-                      onChange={(e) => setNewQuery(e.target.value)}
-                      placeholder={ANCHOR_TYPE_META[newType].placeholder}
-                      maxLength={200}
-                      disabled={isGenerating}
-                      className="w-full rounded-md border border-foreground/20 bg-background px-3 py-2 text-sm text-foreground placeholder:text-foreground/40 focus:border-foreground focus:outline-none"
-                    />
-                  </div>
-
-                  <div className="sm:w-40">
-                    <label
-                      htmlFor={`${baseId}-new-anchor-type`}
-                      className="sr-only"
-                    >
-                      Entity type
-                    </label>
-                    <select
-                      id={`${baseId}-new-anchor-type`}
-                      value={newType}
-                      onChange={(e) =>
-                        setNewType(e.target.value as SupportedAnchorType)
-                      }
-                      disabled={isGenerating}
-                      className="w-full rounded-md border border-foreground/20 bg-background px-3 py-2 text-sm text-foreground focus:border-foreground focus:outline-none"
-                    >
-                      {SUPPORTED_ANCHOR_TYPES.map((typeOption) => (
-                        <option key={typeOption} value={typeOption}>
-                          {ANCHOR_TYPE_META[typeOption].label}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-
-                  <button
-                    type="submit"
-                    disabled={isGenerating || newQuery.trim().length === 0}
-                    className="rounded-md bg-foreground px-4 py-2 text-xs font-medium text-background transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
-                  >
-                    Search Qloo
-                  </button>
-                </div>
-              </form>
-            )}
-          </div>
-        </section>
-
-        {/* Step 4: Generate Starter Kit Action Panel */}
-        <section
-          aria-label="Generate Cultural Starter Kit"
-          className="rounded-lg border border-foreground/15 bg-foreground/[0.02] p-4 sm:p-5"
-        >
-          <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-            <div className="space-y-1">
-              <div className="flex flex-wrap items-center gap-2 text-sm font-medium">
-                <span>Destination: {state.city}</span>
-                <span className="text-foreground/30">·</span>
-                <span className="font-mono text-xs text-foreground/70">
-                  {confirmedCount} of {state.anchors.length} confirmed
-                </span>
               </div>
-              <p className="text-xs text-foreground/60">
-                {isGenerating
-                  ? `Querying Qloo and verifying recommendations for ${state.city}…`
-                  : isReady
-                    ? `Ready to generate your ${state.city} Cultural Starter Kit with ${confirmedCount} confirmed ${confirmedCount === 1 ? "anchor" : "anchors"}.`
-                    : state.anchors.length === 0
-                      ? "Add and confirm at least one cultural anchor to enable generation."
-                      : "Search and explicitly confirm every anchor in your list (or remove unconfirmed ones) before generating."}
-              </p>
             </div>
 
-            <button
-              type="button"
-              onClick={handleGenerateKit}
-              disabled={!isReady || isGenerating}
-              className="inline-flex shrink-0 items-center justify-center gap-2 rounded-md bg-foreground px-5 py-2.5 text-sm font-medium text-background transition-opacity hover:opacity-90 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-foreground disabled:cursor-not-allowed disabled:opacity-40"
-            >
-              {isGenerating && (
-                <span
-                  className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-background/30 border-t-background"
-                  aria-hidden="true"
-                />
-              )}
-              {isGenerating
-                ? `Generating for ${state.city}…`
-                : `Generate ${state.city} Starter Kit`}
-            </button>
-          </div>
-        </section>
+            {formError && (
+              <div
+                role="alert"
+                className="rounded-md border border-red-500/30 bg-red-500/5 px-3.5 py-2.5 text-xs text-red-700 dark:text-red-300"
+              >
+                {formError}
+              </div>
+            )}
 
-        {/* Generation Output States: Error, Empty, Partial/Success */}
-        {state.generation.status === "error" && (
+            {/* Anchor Rows */}
+            <div className="divide-y divide-foreground/10 rounded-lg border border-foreground/15">
+              {state.anchors.length === 0 && !isAddRowOpen && (
+                <div className="p-6 text-center">
+                  <p className="text-sm font-medium text-foreground/80">
+                    No cultural anchors in {currentPreset.name}
+                  </p>
+                  <p className="mt-1 text-xs text-foreground/55">
+                    Add at least one artist, TV show, movie, brand, or person to
+                    discover connected places in {state.city}.
+                  </p>
+                  <button
+                    type="button"
+                    disabled={isGenerating}
+                    onClick={() => setIsAddRowOpen(true)}
+                    className="mt-3 rounded-md bg-foreground px-3.5 py-1.5 text-xs font-medium text-background transition-opacity hover:opacity-90"
+                  >
+                    Add your first anchor
+                  </button>
+                </div>
+              )}
+
+              {state.anchors.map((anchor) => (
+                <AnchorRow
+                  key={anchor.id}
+                  anchor={anchor}
+                  disabled={isGenerating}
+                  onLookup={() =>
+                    lookupSingleAnchor(anchor.id, anchor.query, anchor.type)
+                  }
+                  onStartEdit={() =>
+                    setState((prev) => setAnchorEditing(prev, anchor.id, true))
+                  }
+                  onCancelEdit={() =>
+                    setState((prev) => setAnchorEditing(prev, anchor.id, false))
+                  }
+                  onSaveEdit={(query, type) =>
+                    handleUpdateAnchor(anchor.id, query, type)
+                  }
+                  onRemove={() => handleRemoveAnchor(anchor.id)}
+                  onConfirm={(entityId) =>
+                    handleConfirmCandidate(anchor.id, entityId)
+                  }
+                  onUnconfirm={() => handleUnconfirmAnchor(anchor.id)}
+                />
+              ))}
+
+              {/* Inline Add Anchor Form */}
+              {isAddRowOpen && state.anchors.length < MAX_TRUSTED_ANCHORS && (
+                <form
+                  onSubmit={handleAddAnchorSubmit}
+                  className="bg-foreground/[0.015] p-4"
+                >
+                  <div className="mb-2.5 flex items-center justify-between">
+                    <span className="text-xs font-medium text-foreground/80">
+                      Add cultural anchor ({state.anchors.length + 1} of{" "}
+                      {MAX_TRUSTED_ANCHORS})
+                    </span>
+                    {state.anchors.length > 0 && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setIsAddRowOpen(false);
+                          setFormError(null);
+                        }}
+                        className="text-xs text-foreground/50 hover:text-foreground/80"
+                      >
+                        Cancel
+                      </button>
+                    )}
+                  </div>
+
+                  <div className="flex flex-col gap-2.5 sm:flex-row">
+                    <div className="flex-1">
+                      <label
+                        htmlFor={`${baseId}-new-anchor-query`}
+                        className="sr-only"
+                      >
+                        Anchor name
+                      </label>
+                      <input
+                        id={`${baseId}-new-anchor-query`}
+                        type="text"
+                        value={newQuery}
+                        onChange={(e) => setNewQuery(e.target.value)}
+                        placeholder={ANCHOR_TYPE_META[newType].placeholder}
+                        maxLength={200}
+                        disabled={isGenerating}
+                        className="w-full rounded-md border border-foreground/20 bg-background px-3 py-2 text-sm text-foreground placeholder:text-foreground/40 focus:border-foreground focus:outline-none"
+                      />
+                    </div>
+
+                    <div className="sm:w-40">
+                      <label
+                        htmlFor={`${baseId}-new-anchor-type`}
+                        className="sr-only"
+                      >
+                        Entity type
+                      </label>
+                      <select
+                        id={`${baseId}-new-anchor-type`}
+                        value={newType}
+                        onChange={(e) =>
+                          setNewType(e.target.value as SupportedAnchorType)
+                        }
+                        disabled={isGenerating}
+                        className="w-full rounded-md border border-foreground/20 bg-background px-3 py-2 text-sm text-foreground focus:border-foreground focus:outline-none"
+                      >
+                        {SUPPORTED_ANCHOR_TYPES.map((typeOption) => (
+                          <option key={typeOption} value={typeOption}>
+                            {ANCHOR_TYPE_META[typeOption].label}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+
+                    <button
+                      type="submit"
+                      disabled={isGenerating || newQuery.trim().length === 0}
+                      className="rounded-md bg-foreground px-4 py-2 text-xs font-medium text-background transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
+                    >
+                      Search Qloo
+                    </button>
+                  </div>
+                </form>
+              )}
+            </div>
+          </section>
+
+          {/* Step 4: Generate Starter Kit Action Panel */}
           <section
-            role="alert"
-            aria-label="Starter kit generation error"
-            className="rounded-lg border border-red-500/30 bg-red-500/5 p-5"
+            aria-label="Generate Cultural Starter Kit"
+            className="rounded-lg border border-foreground/15 bg-foreground/[0.02] p-4 sm:p-5"
           >
-            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-              <div>
-                <h3 className="text-sm font-semibold text-red-700 dark:text-red-300">
-                  Starter Kit generation could not complete
-                </h3>
-                <p className="mt-1 text-xs text-foreground/75">
-                  {state.generation.errorMessage ??
-                    "An unexpected error occurred while generating your kit."}
-                </p>
-                <p className="mt-1 text-xs text-foreground/55">
-                  Your selected destination ({state.city}) and{" "}
-                  {confirmedCount} confirmed{" "}
-                  {confirmedCount === 1 ? "anchor" : "anchors"} are still intact.
+            <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+              <div className="space-y-1">
+                <div className="flex flex-wrap items-center gap-2 text-sm font-medium">
+                  <span>Destination: {state.city}</span>
+                  <span className="text-foreground/30">·</span>
+                  <span className="font-mono text-xs text-foreground/70">
+                    {confirmedCount} of {state.anchors.length} confirmed
+                  </span>
+                </div>
+                <p className="text-xs text-foreground/60">
+                  {isGenerating
+                    ? `Querying Qloo and verifying recommendations for ${state.city}…`
+                    : isReady
+                      ? `Ready to generate your ${state.city} Cultural Starter Kit with ${confirmedCount} confirmed ${confirmedCount === 1 ? "anchor" : "anchors"}.`
+                      : state.anchors.length === 0
+                        ? "Add and confirm at least one cultural anchor to enable generation."
+                        : "Search and explicitly confirm every anchor in your list (or remove unconfirmed ones) before generating."}
                 </p>
               </div>
+
               <button
                 type="button"
                 onClick={handleGenerateKit}
                 disabled={!isReady || isGenerating}
-                className="shrink-0 rounded-md border border-foreground/25 bg-background px-4 py-2 text-xs font-medium text-foreground transition-colors hover:bg-foreground/[0.04]"
+                className="inline-flex shrink-0 items-center justify-center gap-2 rounded-md bg-foreground px-5 py-2.5 text-sm font-medium text-background transition-opacity hover:opacity-90 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-foreground disabled:cursor-not-allowed disabled:opacity-40"
               >
-                Retry generation
+                {isGenerating && (
+                  <span
+                    className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-background/30 border-t-background"
+                    aria-hidden="true"
+                  />
+                )}
+                {isGenerating
+                  ? `Generating for ${state.city}…`
+                  : `Generate ${state.city} Starter Kit`}
               </button>
             </div>
           </section>
-        )}
 
+          {/* Generation Error State — never retains stale results */}
+          {state.generation.status === "error" && (
+            <section
+              role="alert"
+              aria-label="Starter kit generation error"
+              className="space-y-4 rounded-lg border border-red-500/30 bg-red-500/5 p-5"
+            >
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                <div>
+                  <h3 className="text-sm font-semibold text-red-700 dark:text-red-300">
+                    Starter Kit generation could not complete
+                  </h3>
+                  <p className="mt-1 text-xs text-foreground/75">
+                    {state.generation.errorMessage ??
+                      "An unexpected error occurred while generating your kit."}
+                  </p>
+                  <p className="mt-1 text-xs text-foreground/55">
+                    Your selected destination ({state.city}) and{" "}
+                    {confirmedCount} confirmed{" "}
+                    {confirmedCount === 1 ? "anchor" : "anchors"} are preserved.
+                    No stale or unverified results are shown.
+                  </p>
+                </div>
+                <div className="flex shrink-0 flex-wrap items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={focusAnchorsEditor}
+                    className="rounded-md border border-foreground/20 bg-background px-3.5 py-2 text-xs font-medium text-foreground transition-colors hover:bg-foreground/[0.04]"
+                  >
+                    Edit anchors
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleGenerateKit}
+                    disabled={!isReady || isGenerating}
+                    className="rounded-md bg-foreground px-4 py-2 text-xs font-medium text-background transition-opacity hover:opacity-90 disabled:opacity-40"
+                  >
+                    Retry generation
+                  </button>
+                </div>
+              </div>
+
+              {state.generation.errorProcess && (
+                <AgentTraceDrawer
+                  process={state.generation.errorProcess}
+                  isOpen={isErrorTraceOpen}
+                  onToggle={() => setIsErrorTraceOpen((prev) => !prev)}
+                />
+              )}
+            </section>
+          )}
+        </div>
+
+        {/* Full Cultural Starter Kit Results, Map, and Agent Trace */}
         {state.generation.result && (
-          <CompletionView
-            completion={state.generation.result}
-            onRegenerate={handleGenerateKit}
-            isGenerating={isGenerating}
-          />
+          <section
+            ref={resultsSectionRef}
+            aria-label="Cultural Starter Kit results"
+            className="scroll-mt-20 border-t border-foreground/15 pt-8"
+          >
+            <StarterKitResultsView
+              key={`${state.generation.result.city}-${state.generation.result.status}-${state.generation.result.mode}-${state.generation.result.recommendations.map((r) => r.entityId).join(",")}`}
+              completion={state.generation.result}
+              fallbackCity={state.city}
+              confirmedAnchorsSummary={state.anchors
+                .filter((a) => a.status === "confirmed" && a.confirmedEntity)
+                .map((a) => a.confirmedEntity!.name)}
+              onRegenerate={handleGenerateKit}
+              onEditAnchors={focusAnchorsEditor}
+              isGenerating={isGenerating}
+            />
+          </section>
         )}
       </main>
     </div>
@@ -913,7 +968,6 @@ function AnchorRow({
 
   return (
     <div className="p-4">
-      {/* Top row: anchor query, requested type, status badge, row actions */}
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div className="flex flex-wrap items-center gap-2">
           <AnchorStatusDot status={anchor.status} />
@@ -964,7 +1018,6 @@ function AnchorRow({
         </div>
       </div>
 
-      {/* State-specific detail body */}
       {anchor.status === "unsearched" && (
         <p className="mt-1.5 pl-4 text-xs text-foreground/50">
           Not yet searched in Qloo. Click <strong>Find match</strong> to look up
@@ -1156,140 +1209,621 @@ function AnchorStatusDot({ status }: { status: AnchorItem["status"] }) {
   );
 }
 
-function CompletionView({
-  completion,
-  onRegenerate,
-  isGenerating,
-}: {
+// ── Cultural Starter Kit Results View ────────────────────────
+
+interface StarterKitResultsViewProps {
   completion: SafeKitCompletion;
+  fallbackCity: string;
+  confirmedAnchorsSummary: string[];
   onRegenerate: () => void;
+  onEditAnchors: () => void;
   isGenerating: boolean;
-}) {
-  const statusBadge = {
-    success: {
-      label: "Verified Starter Kit",
-      style:
-        "border-emerald-500/25 bg-emerald-500/10 text-emerald-800 dark:text-emerald-300",
-    },
-    partial: {
-      label: "Partial Starter Kit",
-      style:
-        "border-amber-500/25 bg-amber-500/10 text-amber-800 dark:text-amber-300",
-    },
-    empty: {
-      label: "No Verified Matches",
-      style: "border-foreground/20 bg-foreground/5 text-foreground/70",
-    },
-  }[completion.status];
+}
+
+function StarterKitResultsView({
+  completion,
+  fallbackCity,
+  confirmedAnchorsSummary,
+  onRegenerate,
+  onEditAnchors,
+  isGenerating,
+}: StarterKitResultsViewProps) {
+  const displayCity = completion.city || fallbackCity;
+
+  const groups = useMemo(
+    () => groupRecommendationsByCategory(completion.recommendations),
+    [completion.recommendations],
+  );
+  const markers = useMemo(
+    () => extractMapMarkers(completion.recommendations),
+    [completion.recommendations],
+  );
+  const markerOrderById = useMemo(() => {
+    const map = new Map<string, number>();
+    for (const m of markers) {
+      map.set(m.entityId, m.orderIndex);
+    }
+    return map;
+  }, [markers]);
+
+  const [selectedEntityId, setSelectedEntityId] = useState<string | null>(null);
+  const [activeCategoryFilter, setActiveCategoryFilter] =
+    useState<string>("__all__");
+  const [isTraceOpen, setIsTraceOpen] = useState<boolean>(
+    () => completion.status !== "success" || completion.mode === "deterministic",
+  );
+
+  const visibleGroups = useMemo(() => {
+    if (activeCategoryFilter === "__all__") return groups;
+    return groups.filter((g) => g.key === activeCategoryFilter);
+  }, [groups, activeCategoryFilter]);
+
+  const effectiveSelectedId =
+    selectedEntityId &&
+    completion.recommendations.some((r) => r.entityId === selectedEntityId)
+      ? selectedEntityId
+      : null;
+
+  const selection = useMemo(
+    () =>
+      resolveSelectionState(completion.recommendations, effectiveSelectedId),
+    [completion.recommendations, effectiveSelectedId],
+  );
+
+  function handleSelectFromMap(entityId: string) {
+    setSelectedEntityId(entityId);
+    // If a category filter hid the selected card, reset to show all categories
+    if (activeCategoryFilter !== "__all__") {
+      const inCurrentGroup = visibleGroups.some((g) =>
+        g.items.some((i) => i.entityId === entityId),
+      );
+      if (!inCurrentGroup) {
+        setActiveCategoryFilter("__all__");
+      }
+    }
+  }
+
+  function handleJumpToCard(entityId: string) {
+    handleSelectFromMap(entityId);
+    requestAnimationFrame(() => {
+      const el = document.getElementById(`rec-card-${entityId}`);
+      if (el) {
+        el.scrollIntoView({ behavior: "smooth", block: "nearest" });
+        el.focus({ preventScroll: true });
+      }
+    });
+  }
+
+  const statusPresentation = getKitStatusPresentation(completion.status);
+
+  const unmappedCount = Math.max(
+    0,
+    completion.recommendations.length - markers.length,
+  );
 
   return (
-    <section
-      aria-label="Cultural Starter Kit results"
-      className="space-y-4 border-t border-foreground/15 pt-6"
-    >
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        <div>
-          <div className="flex flex-wrap items-center gap-2">
-            <h3 className="text-lg font-semibold tracking-tight">
-              {completion.city
-                ? `${completion.city} Cultural Starter Kit`
-                : "Cultural Starter Kit"}
-            </h3>
-            <span
-              className={`rounded border px-2 py-0.5 font-mono text-xs font-medium ${statusBadge.style}`}
-            >
-              {statusBadge.label}
-            </span>
+    <div className="space-y-6">
+      {/* 1. Top Kit Summary & Action Header */}
+      <div className="rounded-lg border border-foreground/15 bg-foreground/[0.02] p-5">
+        <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+          <div className="space-y-2">
+            <div className="flex flex-wrap items-center gap-2">
+              <h3 className="text-xl font-semibold tracking-tight">
+                {displayCity} Cultural Starter Kit
+              </h3>
+              <span
+                className={`rounded border px-2 py-0.5 font-mono text-xs font-medium ${statusPresentation.badgeClassName}`}
+              >
+                {statusPresentation.badgeText}
+              </span>
+              <span className="rounded border border-foreground/15 bg-background px-2 py-0.5 font-mono text-xs text-foreground/75">
+                {completion.mode === "deterministic"
+                  ? "Deterministic Qloo fallback"
+                  : "Agent-assisted (Bedrock + Qloo)"}
+              </span>
+              {completion.cached && (
+                <span className="rounded border border-foreground/15 bg-background px-2 py-0.5 font-mono text-xs text-foreground/65">
+                  Cached response
+                </span>
+              )}
+            </div>
+
+            <p className="text-sm text-foreground/75">{completion.summary}</p>
+            <p className="text-xs text-foreground/60">
+              {statusPresentation.scopeNote}
+            </p>
+
+            {/* Profile & Evidence Context Bar */}
+            <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-foreground/60">
+              <span>
+                <strong>Places found:</strong>{" "}
+                {completion.recommendations.length} accepted{" "}
+                {completion.recommendations.length === 1 ? "place" : "places"}{" "}
+                across {groups.length} Qloo{" "}
+                {groups.length === 1 ? "category group" : "category groups"}
+              </span>
+              <span>·</span>
+              <span>
+                <strong>Mapped:</strong> {markers.length} of{" "}
+                {completion.recommendations.length}
+                {unmappedCount > 0
+                  ? ` (${unmappedCount} in list without coordinates)`
+                  : ""}
+              </span>
+              {confirmedAnchorsSummary.length > 0 && (
+                <>
+                  <span>·</span>
+                  <span>
+                    <strong>Confirmed anchors:</strong>{" "}
+                    {confirmedAnchorsSummary.join(", ")}
+                  </span>
+                </>
+              )}
+            </div>
           </div>
-          <p className="mt-1 text-sm text-foreground/65">
-            {completion.summary}
-          </p>
+
+          <div className="flex shrink-0 flex-wrap items-center gap-2">
+            <button
+              type="button"
+              onClick={onEditAnchors}
+              disabled={isGenerating}
+              className="rounded-md border border-foreground/20 bg-background px-3.5 py-2 text-xs font-medium text-foreground transition-colors hover:bg-foreground/[0.04] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-foreground disabled:opacity-40"
+            >
+              Edit anchors &amp; revise kit
+            </button>
+            <button
+              type="button"
+              onClick={() => setIsTraceOpen((prev) => !prev)}
+              aria-expanded={isTraceOpen}
+              className="rounded-md border border-foreground/20 bg-background px-3.5 py-2 text-xs font-medium text-foreground transition-colors hover:bg-foreground/[0.04] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-foreground"
+            >
+              {isTraceOpen ? "Hide search process" : "How this kit was built"}
+            </button>
+          </div>
         </div>
 
-        <span className="font-mono text-xs text-foreground/50">
-          {completion.recommendations.length}{" "}
-          {completion.recommendations.length === 1 ? "place" : "places"}
-        </span>
+        {/* Partial or Deterministic Fallback Honest Notice */}
+        {(completion.status === "partial" ||
+          completion.mode === "deterministic") && (
+          <div className="mt-4 flex flex-col gap-1 rounded-md border border-foreground/15 bg-background px-3.5 py-2.5 text-xs text-foreground/75">
+            {completion.status === "partial" && (
+              <p>
+                <strong>Partial result notice:</strong>{" "}
+                {completion.filteredInvalidCount > 0
+                  ? `${completion.filteredInvalidCount} candidate ${
+                      completion.filteredInvalidCount === 1
+                        ? "ID was"
+                        : "IDs were"
+                    } excluded because ${
+                      completion.filteredInvalidCount === 1
+                        ? "it was"
+                        : "they were"
+                    } not in the deterministic validator's accepted set.`
+                  : "Only recommendations that passed every deterministic validation check are included."}{" "}
+                CultureBridge never pads results to reach a target count.
+              </p>
+            )}
+            {completion.mode === "deterministic" && (
+              <p>
+                <strong>Deterministic fallback mode:</strong>{" "}
+                {completion.searchProcess.fallbackReason ??
+                  "Results were generated directly from Qloo taste queries and deterministic screening without LLM synthesis."}
+              </p>
+            )}
+          </div>
+        )}
+
+        {/* Deterministic Evidence Label Key */}
+        <div
+          aria-label="Evidence label key"
+          className="mt-4 grid grid-cols-1 gap-2 border-t border-foreground/10 pt-3.5 sm:grid-cols-3"
+        >
+          {(
+            ["connection", "useful-place", "exploratory"] as const
+          ).map((labelKey) => {
+            const info = LABEL_PRESENTATION[labelKey];
+            const count = completion.recommendations.filter(
+              (r) => r.label === labelKey,
+            ).length;
+            return (
+              <div
+                key={labelKey}
+                className="flex items-start gap-2 rounded border border-foreground/10 bg-background p-2.5 text-xs"
+              >
+                <span
+                  className={`mt-0.5 inline-flex shrink-0 items-center gap-1 rounded border px-1.5 py-0.5 font-mono text-[11px] font-medium ${info.badgeClassName}`}
+                >
+                  <span aria-hidden="true">{info.symbol}</span>
+                  <span>{info.badgeText}</span>
+                </span>
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center justify-between gap-1">
+                    <span className="font-medium text-foreground/85">
+                      {info.shortTitle}
+                    </span>
+                    <span className="font-mono text-[11px] text-foreground/55">
+                      {count}
+                    </span>
+                  </div>
+                  <p className="mt-0.5 text-[11px] leading-snug text-foreground/60">
+                    {info.description}
+                  </p>
+                </div>
+              </div>
+            );
+          })}
+        </div>
       </div>
 
+      {/* 2. Collapsible Agent Trace Drawer */}
+      <AgentTraceDrawer
+        process={completion.searchProcess}
+        isOpen={isTraceOpen}
+        onToggle={() => setIsTraceOpen((prev) => !prev)}
+      />
+
+      {/* 3. Empty vs Populated Results Experience */}
       {completion.recommendations.length === 0 ? (
-        <div className="rounded-lg border border-foreground/15 p-6">
-          <p className="text-sm font-medium text-foreground/80">
-            No recommendations passed verification for this query
+        <div className="rounded-lg border border-foreground/15 bg-foreground/[0.015] p-6">
+          <h4 className="text-base font-semibold text-foreground/90">
+            No places passed deterministic screening for this query
+          </h4>
+          <p className="mt-1.5 max-w-2xl text-xs leading-relaxed text-foreground/65">
+            CultureBridge never pads a starter kit with excluded hotels,
+            transit hubs, closed listings, or fabricated matches. You can
+            inspect the search process above to see how Qloo was queried and why
+            candidates were filtered, or adjust your anchors to try a different
+            combination.
           </p>
-          <p className="mt-1 text-xs text-foreground/60">
-            CultureBridge never pads results with unverified places. Try adding
-            another confirmed anchor, choosing a different preset, or switching
-            between Berlin and Toronto.
-          </p>
-          <button
-            type="button"
-            disabled={isGenerating}
-            onClick={onRegenerate}
-            className="mt-4 rounded-md border border-foreground/20 px-3.5 py-1.5 text-xs font-medium hover:bg-foreground/[0.04]"
-          >
-            Try again
-          </button>
+          <div className="mt-4 flex flex-wrap items-center gap-2.5">
+            <button
+              type="button"
+              onClick={onEditAnchors}
+              disabled={isGenerating}
+              className="rounded-md bg-foreground px-4 py-2 text-xs font-medium text-background transition-opacity hover:opacity-90 disabled:opacity-40"
+            >
+              Edit cultural anchors
+            </button>
+            <button
+              type="button"
+              disabled={isGenerating}
+              onClick={onRegenerate}
+              className="rounded-md border border-foreground/20 bg-background px-4 py-2 text-xs font-medium text-foreground hover:bg-foreground/[0.04] disabled:opacity-40"
+            >
+              Retry generation
+            </button>
+          </div>
         </div>
       ) : (
-        <div className="space-y-2.5">
-          {completion.recommendations.map((rec) => (
-            <RecommendationCard key={rec.entityId} rec={rec} />
-          ))}
+        <div className="grid grid-cols-1 gap-6 lg:grid-cols-12 lg:items-start">
+          {/* Map Column — shown above list on mobile, sticky right column on desktop */}
+          <div className="order-1 lg:order-2 lg:col-span-5 lg:sticky lg:top-20">
+            <ResultsMap
+              city={displayCity}
+              recommendations={completion.recommendations}
+              selectedEntityId={selection.selectedEntityId}
+              onSelectEntity={handleSelectFromMap}
+              onJumpToCard={handleJumpToCard}
+            />
+          </div>
+
+          {/* Grouped Recommendations Column */}
+          <div className="order-2 space-y-5 lg:order-1 lg:col-span-7">
+            {/* Category Filter / Jump Bar */}
+            {groups.length > 1 && (
+              <nav
+                aria-label="Filter recommendations by Qloo category"
+                className="flex flex-wrap items-center gap-1.5 rounded-lg border border-foreground/12 bg-foreground/[0.015] p-2.5"
+              >
+                <button
+                  type="button"
+                  aria-pressed={activeCategoryFilter === "__all__"}
+                  onClick={() => setActiveCategoryFilter("__all__")}
+                  className={`rounded border px-2.5 py-1 text-xs font-medium transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-foreground ${
+                    activeCategoryFilter === "__all__"
+                      ? "border-foreground bg-foreground text-background"
+                      : "border-foreground/15 bg-background text-foreground/75 hover:border-foreground/35"
+                  }`}
+                >
+                  All categories ({completion.recommendations.length})
+                </button>
+                {groups.map((group) => {
+                  const active = activeCategoryFilter === group.key;
+                  return (
+                    <button
+                      key={group.key}
+                      type="button"
+                      aria-pressed={active}
+                      onClick={() => setActiveCategoryFilter(group.key)}
+                      className={`rounded border px-2.5 py-1 text-xs font-medium transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-foreground ${
+                        active
+                          ? "border-foreground bg-foreground text-background"
+                          : "border-foreground/15 bg-background text-foreground/75 hover:border-foreground/35"
+                      }`}
+                    >
+                      {group.title} ({group.items.length})
+                    </button>
+                  );
+                })}
+              </nav>
+            )}
+
+            {/* Category Group Sections */}
+            <div className="space-y-6">
+              {visibleGroups.map((group) => (
+                <section
+                  key={group.key}
+                  aria-label={`${group.title} recommendations`}
+                  className="space-y-3"
+                >
+                  <div className="flex items-baseline justify-between border-b border-foreground/12 pb-2">
+                    <div className="flex items-center gap-2">
+                      <h4 className="text-sm font-semibold tracking-tight text-foreground">
+                        {group.title}
+                      </h4>
+                      {group.isUncategorized && (
+                        <span className="text-xs text-foreground/55">
+                          · No specific place-category tag in Qloo
+                        </span>
+                      )}
+                    </div>
+                    <span className="font-mono text-xs text-foreground/55">
+                      {group.items.length}{" "}
+                      {group.items.length === 1 ? "place" : "places"}
+                    </span>
+                  </div>
+
+                  <div className="space-y-3">
+                    {group.items.map((rec) => (
+                      <RecommendationCard
+                        key={rec.entityId}
+                        rec={rec}
+                        pinOrderIndex={markerOrderById.get(rec.entityId) ?? null}
+                        isSelected={selection.selectedEntityId === rec.entityId}
+                        onSelect={() => setSelectedEntityId(rec.entityId)}
+                      />
+                    ))}
+                  </div>
+                </section>
+              ))}
+            </div>
+          </div>
         </div>
       )}
-    </section>
+    </div>
   );
 }
 
-function RecommendationCard({ rec }: { rec: SafeRecommendationItem }) {
-  const style = LABEL_STYLES[rec.label];
+// ── Recommendation Card ──────────────────────────────────────
 
-  const details: string[] = [];
-  if (rec.neighborhood) details.push(rec.neighborhood);
-  if (rec.address) details.push(rec.address);
-  if (rec.phone) details.push(rec.phone);
-  if (rec.priceLevel != null && rec.priceLevel > 0) {
-    details.push("$".repeat(Math.min(rec.priceLevel, 4)));
-  }
+interface RecommendationCardProps {
+  rec: SafeRecommendationItem;
+  pinOrderIndex: number | null;
+  isSelected: boolean;
+  onSelect: () => void;
+}
+
+function RecommendationCard({
+  rec,
+  pinOrderIndex,
+  isSelected,
+  onSelect,
+}: RecommendationCardProps) {
+  const labelInfo = getLabelPresentation(rec.label);
+  const categoryInfo = useMemo(() => describeCategoryEvidence(rec), [rec]);
+  const provenance = useMemo(() => formatRecommendationProvenance(rec), [rec]);
+  const practical = useMemo(() => buildPracticalDetailsView(rec), [rec]);
 
   return (
-    <article className="rounded-lg border border-foreground/12 p-4">
-      <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0">
-          <h4 className="text-sm font-semibold">{rec.name}</h4>
-          {rec.categories.length > 0 && (
-            <p className="text-xs text-foreground/55">
-              {rec.categories.join(" · ")}
-            </p>
-          )}
+    <article
+      id={`rec-card-${rec.entityId}`}
+      tabIndex={-1}
+      aria-label={`${rec.name} — ${labelInfo.badgeText}`}
+      className={`rounded-lg border p-4 transition-colors focus:outline-none ${
+        isSelected
+          ? "border-foreground bg-foreground/[0.03] ring-1 ring-foreground"
+          : "border-foreground/15 bg-background hover:border-foreground/30"
+      }`}
+    >
+      {/* 1. Card Header: Pin badge, Name, Categories, Evidence Label */}
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="min-w-0 flex-1 space-y-1">
+          <div className="flex flex-wrap items-center gap-2">
+            {practical.mappable && pinOrderIndex !== null ? (
+              <span
+                title={`Map pin #${pinOrderIndex}`}
+                className={`inline-flex items-center gap-0.5 rounded-full border px-2 py-0.5 font-mono text-[11px] font-semibold ${
+                  isSelected
+                    ? "border-foreground bg-foreground text-background"
+                    : "border-foreground/30 bg-foreground/[0.05] text-foreground"
+                }`}
+              >
+                <span aria-hidden="true">{labelInfo.symbol}</span>
+                <span>{pinOrderIndex}</span>
+              </span>
+            ) : (
+              <span
+                title="No valid map coordinates in Qloo"
+                className="inline-flex items-center rounded border border-foreground/15 bg-foreground/[0.04] px-1.5 py-0.5 font-mono text-[10px] text-foreground/60"
+              >
+                Not on map
+              </span>
+            )}
+
+            <h5 className="text-base font-semibold tracking-tight text-foreground">
+              {rec.name}
+            </h5>
+          </div>
+
+          <p className="text-xs text-foreground/65">
+            {categoryInfo.qlooCategories.length > 0 ? (
+              <>
+                <span className="font-medium text-foreground/80">
+                  {categoryInfo.qlooCategoryLabel}:
+                </span>{" "}
+                {categoryInfo.qlooCategories.join(" · ")}
+              </>
+            ) : (
+              <span className="italic text-foreground/55">
+                Category not specified in Qloo output
+              </span>
+            )}
+          </p>
         </div>
+
         <span
-          className={`shrink-0 rounded border px-2 py-0.5 font-mono text-[11px] font-medium ${style.bg} ${style.text} ${style.border}`}
+          className={`inline-flex shrink-0 items-center gap-1 rounded border px-2.5 py-1 font-mono text-xs font-medium ${labelInfo.badgeClassName}`}
         >
-          {style.display}
+          <span aria-hidden="true">{labelInfo.symbol}</span>
+          <span>{labelInfo.badgeText}</span>
         </span>
       </div>
 
-      <p className="mt-2 text-xs leading-relaxed text-foreground/75">
+      {/* 2. Verified Explanation */}
+      <p className="mt-3 text-sm leading-relaxed text-foreground/85">
         {rec.explanationText}
       </p>
 
-      {(details.length > 0 || rec.website) && (
-        <div className="mt-2.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-foreground/50">
-          {details.length > 0 && <span>{details.join(" · ")}</span>}
-          {rec.website && (
-            <a
-              href={rec.website}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="underline underline-offset-2 hover:text-foreground/75"
-            >
-              {rec.website.replace(/^https?:\/\/(www\.)?/, "").replace(/\/$/, "")}
-            </a>
+      {/* 3. Grounded Query Provenance & Evidence Box */}
+      <div className="mt-3 space-y-1 rounded-md border border-foreground/12 bg-foreground/[0.02] p-3 text-xs">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <span className="font-semibold text-foreground/90">
+            {provenance.headline}
+          </span>
+          {provenance.categoryMatchLabel && (
+            <span className="rounded border border-foreground/15 bg-background px-1.5 py-0.5 font-mono text-[10px] text-foreground/65">
+              {provenance.categoryMatchLabel}
+            </span>
           )}
         </div>
+        <p className="text-foreground/70">{provenance.detail}</p>
+        {provenance.honestyDisclaimer && (
+          <p className="pt-0.5 text-[11px] text-foreground/55">
+            {provenance.honestyDisclaimer}
+          </p>
+        )}
+      </div>
+
+      {/* 4. Supporting Qloo Tags (when present) */}
+      {practical.supportingTags.length > 0 && (
+        <div className="mt-3 flex flex-wrap items-center gap-1.5">
+          <span className="text-[11px] font-medium text-foreground/55">
+            Qloo tags:
+          </span>
+          {practical.supportingTags.map((tag) => (
+            <span
+              key={tag}
+              className="rounded border border-foreground/12 bg-foreground/[0.025] px-2 py-0.5 font-mono text-[11px] text-foreground/70"
+            >
+              {tag}
+            </span>
+          ))}
+        </div>
       )}
+
+      {/* 5. Practical Venue Details & Explicit Unknowns */}
+      <dl className="mt-3 grid grid-cols-1 gap-2 border-t border-foreground/10 pt-3 text-xs sm:grid-cols-2">
+        <div>
+          <dt className="text-[11px] font-medium text-foreground/55">
+            Neighborhood &amp; address
+          </dt>
+          <dd className="mt-0.5 text-foreground/85">
+            {practical.locationLine ?? (
+              <span className="text-foreground/50">
+                Address &amp; neighborhood unavailable in Qloo
+              </span>
+            )}
+          </dd>
+        </div>
+
+        <div>
+          <dt className="text-[11px] font-medium text-foreground/55">
+            Website &amp; contact
+          </dt>
+          <dd className="mt-0.5 flex flex-wrap items-center gap-x-2.5 gap-y-1 text-foreground/85">
+            {practical.websiteUrl && practical.websiteDisplay ? (
+              <a
+                href={practical.websiteUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="font-medium underline underline-offset-2 hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-foreground"
+              >
+                {practical.websiteDisplay}
+              </a>
+            ) : (
+              <span className="text-foreground/50">Website unavailable</span>
+            )}
+            {practical.phone && (
+              <>
+                <span className="text-foreground/30">·</span>
+                <span className="font-mono text-[11px]">{practical.phone}</span>
+              </>
+            )}
+          </dd>
+        </div>
+
+        <div>
+          <dt className="text-[11px] font-medium text-foreground/55">
+            Price &amp; practical details
+          </dt>
+          <dd className="mt-0.5 text-foreground/85">
+            {practical.priceTier ? (
+              <span>
+                Price tier:{" "}
+                <strong className="font-mono">{practical.priceTier}</strong>
+              </span>
+            ) : (
+              <span className="text-foreground/50">Price tier: Unknown</span>
+            )}
+            <span className="text-foreground/30"> · </span>
+            <span className="text-foreground/50">
+              Hours &amp; ratings: Not provided
+            </span>
+          </dd>
+        </div>
+
+        <div>
+          <dt className="text-[11px] font-medium text-foreground/55">
+            Unavailable in Qloo output
+          </dt>
+          <dd className="mt-0.5 text-[11px] text-foreground/55">
+            {practical.unavailableFields.join(", ")}
+          </dd>
+        </div>
+      </dl>
+
+      {/* 6. Card Footer: Map Coordination & Selection */}
+      <div className="mt-3 flex flex-wrap items-center justify-between gap-2 border-t border-foreground/10 pt-2.5 text-xs">
+        {practical.mappable && practical.coordinates ? (
+          <span className="font-mono text-[11px] text-foreground/55">
+            Coordinates: {practical.coordinates.lat.toFixed(4)},{" "}
+            {practical.coordinates.lon.toFixed(4)}
+          </span>
+        ) : (
+          <span className="text-[11px] text-foreground/55">
+            Cannot be shown on map — no valid coordinates in Qloo output
+          </span>
+        )}
+
+        <button
+          type="button"
+          aria-pressed={isSelected}
+          onClick={onSelect}
+          className={`rounded border px-3 py-1 text-xs font-medium transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-foreground ${
+            isSelected
+              ? "border-foreground bg-foreground text-background"
+              : "border-foreground/20 bg-background text-foreground hover:bg-foreground/[0.04]"
+          }`}
+        >
+          {practical.mappable
+            ? isSelected
+              ? "Focused on map"
+              : "Focus on map"
+            : isSelected
+              ? "Selected in list"
+              : "Select place"}
+        </button>
+      </div>
     </article>
   );
 }

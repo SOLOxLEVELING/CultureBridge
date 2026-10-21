@@ -1,6 +1,12 @@
 import { z } from "zod";
 import { runAgent as defaultRunAgent } from "../agent";
-import type { AgentRunInput, AgentRunResult, ConfirmedAnchor } from "../agent";
+import type {
+  AgentRunInput,
+  AgentRunResult,
+  ConfirmedAnchor,
+  TerminationReason,
+  TraceEvent,
+} from "../agent";
 import { discover as defaultDiscover } from "../discover";
 import type { CulturalAnchor, DiscoveryInput } from "../discover";
 import { searchEntity as defaultSearchEntity } from "../qloo/client";
@@ -9,8 +15,17 @@ import type { SearchResponse } from "../qloo/schemas";
 import { resolveEntityFromResults } from "../qloo/resolver";
 import { candidateToEntry } from "../bedrock";
 import type { DiscoverPlacesResultEntry } from "../bedrock";
-import { buildStructuredOutput, StructuredOutputSchema, OutputValidationError } from "../output";
-import type { StructuredOutput } from "../output";
+import {
+  buildStructuredOutput,
+  StructuredOutputSchema,
+  OutputValidationError,
+  projectPublicTrace,
+} from "../output";
+import type {
+  StructuredOutput,
+  PublicSearchProcess,
+  DeterministicDiscoverySummary,
+} from "../output";
 
 // ── Request schema ───────────────────────────────────────────
 
@@ -61,6 +76,7 @@ export interface KitResponse {
   output: StructuredOutput | null;
   error?: KitErrorDetail;
   meta: KitMeta;
+  searchProcess?: PublicSearchProcess;
 }
 
 // ── Response cache (24h TTL, instance-local) ─────────────────
@@ -250,12 +266,17 @@ export async function verifyConfirmedAnchors(
 
 // ── Deterministic fallback ───────────────────────────────────
 
+interface FallbackRunOutcome {
+  output: StructuredOutput;
+  discoverySummary: DeterministicDiscoverySummary;
+}
+
 async function runFallback(
   req: KitRequest,
   verifiedAnchors: VerifiedAnchor[],
   deps: KitHandlerDeps,
   signal?: AbortSignal,
-): Promise<StructuredOutput> {
+): Promise<FallbackRunOutcome> {
   const searchFn = deps.searchEntity ?? defaultSearchEntity;
   const discoverFn = deps.discover ?? defaultDiscover;
 
@@ -291,11 +312,24 @@ async function runFallback(
 
   if (resolvedAnchors.length === 0) {
     return {
-      status: "empty",
-      summary: `No verified recommendations for ${req.city}.`,
-      recommendations: [],
-      totalRecommendations: 0,
-      invalidIds: [],
+      output: {
+        status: "empty",
+        summary: `No verified recommendations for ${req.city}.`,
+        recommendations: [],
+        totalRecommendations: 0,
+        invalidIds: [],
+      },
+      discoverySummary: {
+        resolvedAnchorNames: [],
+        unresolvedCount: req.anchors.length,
+        singleAnchorQueriesCount: 0,
+        blendedQueryRun: false,
+        acceptedCount: 0,
+        reviewCount: 0,
+        rejectedCount: 0,
+        rejectedReasons: {},
+        failureCount: 0,
+      },
     };
   }
 
@@ -313,8 +347,29 @@ async function runFallback(
     }
   }
 
+  const rejectedReasons: Record<string, number> = {};
+  for (const r of discoveryResult.rejected) {
+    const reason = r.validation.reason ?? "other";
+    rejectedReasons[reason] = (rejectedReasons[reason] ?? 0) + 1;
+  }
+
   const validIds = [...acceptedRecords.keys()];
-  return buildStructuredOutput(req.city, validIds, [], acceptedRecords);
+  const output = buildStructuredOutput(req.city, validIds, [], acceptedRecords);
+
+  return {
+    output,
+    discoverySummary: {
+      resolvedAnchorNames: resolvedAnchors.map((a) => a.name),
+      unresolvedCount: Math.max(0, req.anchors.length - resolvedAnchors.length),
+      singleAnchorQueriesCount: resolvedAnchors.length,
+      blendedQueryRun: true,
+      acceptedCount: discoveryResult.accepted.length,
+      reviewCount: discoveryResult.review.length,
+      rejectedCount: discoveryResult.rejected.length,
+      rejectedReasons,
+      failureCount: discoveryResult.failures.length,
+    },
+  };
 }
 
 // ── Error sanitization ───────────────────────────────────────
@@ -425,11 +480,20 @@ async function handleKitRequestInner(
   const cacheKey = buildCacheKey(req);
   const cached = getCached(cacheKey);
   if (cached) {
+    const dur = elapsed();
     return {
       httpStatus: 200,
       response: {
         ...cached,
-        meta: { ...cached.meta, cached: true, durationMs: elapsed() },
+        meta: { ...cached.meta, cached: true, durationMs: dur },
+        searchProcess: cached.searchProcess
+          ? {
+              ...cached.searchProcess,
+              cached: true,
+              qlooCacheStatus: "cached",
+              durationMs: dur,
+            }
+          : undefined,
       },
     };
   }
@@ -437,6 +501,7 @@ async function handleKitRequestInner(
   // 4. Verify confirmed anchors server-side (under request deadline)
   const searchFn = deps.searchEntity ?? defaultSearchEntity;
   let verifiedAnchors: VerifiedAnchor[] = [];
+  let rejectedConfirmationsCount = 0;
   if (req.confirmedAnchors && req.confirmedAnchors.length > 0) {
     try {
       const verification = await verifyConfirmedAnchors(
@@ -446,9 +511,11 @@ async function handleKitRequestInner(
         requestAc.signal,
       );
       verifiedAnchors = verification.verified;
+      rejectedConfirmationsCount = verification.rejected.length;
     } catch {
       // Verification interrupted by request deadline
       if (requestAc.signal.aborted) {
+        const dur = elapsed();
         return {
           httpStatus: 504,
           response: {
@@ -461,7 +528,15 @@ async function handleKitRequestInner(
             meta: buildMeta({
               city: req.city,
               anchorCount: req.anchors.length,
-              durationMs: elapsed(),
+              durationMs: dur,
+            }),
+            searchProcess: projectPublicTrace({
+              city: req.city,
+              mode: "agent",
+              cached: false,
+              durationMs: dur,
+              outcome: "timeout",
+              anchorCount: req.anchors.length,
             }),
           },
         };
@@ -473,6 +548,7 @@ async function handleKitRequestInner(
   // Check remaining time after verification, before starting agent.
   // If the request deadline is already expired, return immediately.
   if (requestAc.signal.aborted || remainingMs() === 0) {
+    const dur = elapsed();
     return {
       httpStatus: 504,
       response: {
@@ -485,7 +561,17 @@ async function handleKitRequestInner(
         meta: buildMeta({
           city: req.city,
           anchorCount: req.anchors.length,
-          durationMs: elapsed(),
+          durationMs: dur,
+        }),
+        searchProcess: projectPublicTrace({
+          city: req.city,
+          mode: "agent",
+          cached: false,
+          durationMs: dur,
+          outcome: "timeout",
+          anchorCount: req.anchors.length,
+          verifiedAnchors,
+          rejectedConfirmationsCount,
         }),
       },
     };
@@ -500,6 +586,9 @@ async function handleKitRequestInner(
   let mode: "agent" | "deterministic" = "agent";
   let output: StructuredOutput | undefined;
   let runId = crypto.randomUUID();
+  let agentTraceEvents: TraceEvent[] = [];
+  let agentTerminationReason: TerminationReason | undefined;
+  let deterministicSummary: DeterministicDiscoverySummary | undefined;
 
   // 5. Try the Bedrock agent with cancellation support
   const agentRunner =
@@ -540,11 +629,14 @@ async function handleKitRequestInner(
     ]).finally(() => clearTimeout(agentTimer));
 
     runId = result.runId;
+    agentTraceEvents = Array.isArray(result.trace) ? result.trace : [];
+    agentTerminationReason = result.status;
 
     if (result.output) {
       const check = StructuredOutputSchema.safeParse(result.output);
 
       if (!check.success) {
+        const dur = elapsed();
         return {
           httpStatus: 500,
           response: {
@@ -559,7 +651,19 @@ async function handleKitRequestInner(
               city: req.city,
               anchorCount: req.anchors.length,
               mode: "agent",
-              durationMs: elapsed(),
+              durationMs: dur,
+            }),
+            searchProcess: projectPublicTrace({
+              city: req.city,
+              mode: "agent",
+              cached: false,
+              durationMs: dur,
+              outcome: "error",
+              anchorCount: req.anchors.length,
+              verifiedAnchors,
+              rejectedConfirmationsCount,
+              agentTerminationReason: "output_validation_failed",
+              traceEvents: agentTraceEvents,
             }),
           },
         };
@@ -570,6 +674,7 @@ async function handleKitRequestInner(
         result.finalization.recommendationCount > 0 &&
         result.output.recommendations.length === 0
       ) {
+        const dur = elapsed();
         return {
           httpStatus: 500,
           response: {
@@ -584,7 +689,19 @@ async function handleKitRequestInner(
               city: req.city,
               anchorCount: req.anchors.length,
               mode: "agent",
-              durationMs: elapsed(),
+              durationMs: dur,
+            }),
+            searchProcess: projectPublicTrace({
+              city: req.city,
+              mode: "agent",
+              cached: false,
+              durationMs: dur,
+              outcome: "error",
+              anchorCount: req.anchors.length,
+              verifiedAnchors,
+              rejectedConfirmationsCount,
+              agentTerminationReason: "output_validation_failed",
+              traceEvents: agentTraceEvents,
             }),
           },
         };
@@ -594,6 +711,7 @@ async function handleKitRequestInner(
     } else if (result.status === "output_validation_failed") {
       // The agent runner's buildStructuredOutput threw OutputValidationError.
       // Do not fall back — this is an internal failure, not a transient upstream error.
+      const dur = elapsed();
       return {
         httpStatus: 500,
         response: {
@@ -608,7 +726,19 @@ async function handleKitRequestInner(
             city: req.city,
             anchorCount: req.anchors.length,
             mode: "agent",
-            durationMs: elapsed(),
+            durationMs: dur,
+          }),
+          searchProcess: projectPublicTrace({
+            city: req.city,
+            mode: "agent",
+            cached: false,
+            durationMs: dur,
+            outcome: "error",
+            anchorCount: req.anchors.length,
+            verifiedAnchors,
+            rejectedConfirmationsCount,
+            agentTerminationReason: "output_validation_failed",
+            traceEvents: agentTraceEvents,
           }),
         },
       };
@@ -619,6 +749,7 @@ async function handleKitRequestInner(
     if (!agentAc.signal.aborted) agentAc.abort();
     // If the request deadline fired, don't attempt fallback
     if (requestAc.signal.aborted) {
+      const dur = elapsed();
       return {
         httpStatus: 504,
         response: {
@@ -633,7 +764,19 @@ async function handleKitRequestInner(
             city: req.city,
             anchorCount: req.anchors.length,
             mode: "agent",
-            durationMs: elapsed(),
+            durationMs: dur,
+          }),
+          searchProcess: projectPublicTrace({
+            city: req.city,
+            mode: "agent",
+            cached: false,
+            durationMs: dur,
+            outcome: "timeout",
+            anchorCount: req.anchors.length,
+            verifiedAnchors,
+            rejectedConfirmationsCount,
+            agentTerminationReason: "total_timeout",
+            traceEvents: agentTraceEvents,
           }),
         },
       };
@@ -646,6 +789,7 @@ async function handleKitRequestInner(
   // 6. Deterministic fallback — only if enough time remains
   if (!output && mode === "deterministic") {
     if (remainingMs() < FALLBACK_MIN_MS) {
+      const dur = elapsed();
       return {
         httpStatus: 504,
         response: {
@@ -660,7 +804,20 @@ async function handleKitRequestInner(
             city: req.city,
             anchorCount: req.anchors.length,
             mode: "deterministic",
-            durationMs: elapsed(),
+            durationMs: dur,
+          }),
+          searchProcess: projectPublicTrace({
+            city: req.city,
+            mode: "deterministic",
+            cached: false,
+            durationMs: dur,
+            outcome: "timeout",
+            anchorCount: req.anchors.length,
+            verifiedAnchors,
+            rejectedConfirmationsCount,
+            agentTerminationReason,
+            agentFailedBeforeFallback: true,
+            traceEvents: agentTraceEvents,
           }),
         },
       };
@@ -677,13 +834,16 @@ async function handleKitRequestInner(
     );
 
     try {
-      output = await runFallback(
+      const fallbackOutcome = await runFallback(
         req,
         verifiedAnchors,
         deps,
         fallbackAc.signal,
       );
+      output = fallbackOutcome.output;
+      deterministicSummary = fallbackOutcome.discoverySummary;
     } catch (err) {
+      const dur = elapsed();
       if (err instanceof OutputValidationError) {
         return {
           httpStatus: 500,
@@ -699,7 +859,20 @@ async function handleKitRequestInner(
               city: req.city,
               anchorCount: req.anchors.length,
               mode: "deterministic",
-              durationMs: elapsed(),
+              durationMs: dur,
+            }),
+            searchProcess: projectPublicTrace({
+              city: req.city,
+              mode: "deterministic",
+              cached: false,
+              durationMs: dur,
+              outcome: "error",
+              anchorCount: req.anchors.length,
+              verifiedAnchors,
+              rejectedConfirmationsCount,
+              agentTerminationReason: "output_validation_failed",
+              agentFailedBeforeFallback: true,
+              traceEvents: agentTraceEvents,
             }),
           },
         };
@@ -719,7 +892,20 @@ async function handleKitRequestInner(
               city: req.city,
               anchorCount: req.anchors.length,
               mode: "deterministic",
-              durationMs: elapsed(),
+              durationMs: dur,
+            }),
+            searchProcess: projectPublicTrace({
+              city: req.city,
+              mode: "deterministic",
+              cached: false,
+              durationMs: dur,
+              outcome: "timeout",
+              anchorCount: req.anchors.length,
+              verifiedAnchors,
+              rejectedConfirmationsCount,
+              agentTerminationReason,
+              agentFailedBeforeFallback: true,
+              traceEvents: agentTraceEvents,
             }),
           },
         };
@@ -740,7 +926,20 @@ async function handleKitRequestInner(
             city: req.city,
             anchorCount: req.anchors.length,
             mode: "deterministic",
-            durationMs: elapsed(),
+            durationMs: dur,
+          }),
+          searchProcess: projectPublicTrace({
+            city: req.city,
+            mode: "deterministic",
+            cached: false,
+            durationMs: dur,
+            outcome: "error",
+            anchorCount: req.anchors.length,
+            verifiedAnchors,
+            rejectedConfirmationsCount,
+            agentTerminationReason,
+            agentFailedBeforeFallback: true,
+            traceEvents: agentTraceEvents,
           }),
         },
       };
@@ -761,6 +960,14 @@ async function handleKitRequestInner(
     };
   }
 
+  const finalDurationMs = elapsed();
+  const processOutcome =
+    output.status === "empty"
+      ? "empty"
+      : output.status === "partial"
+        ? "partial"
+        : "completed";
+
   const kitResponse: KitResponse = {
     status: output.status,
     output,
@@ -770,7 +977,21 @@ async function handleKitRequestInner(
       anchorCount: req.anchors.length,
       mode,
       cached: false,
-      durationMs: elapsed(),
+      durationMs: finalDurationMs,
+    }),
+    searchProcess: projectPublicTrace({
+      city: req.city,
+      mode,
+      cached: false,
+      durationMs: finalDurationMs,
+      outcome: processOutcome,
+      anchorCount: req.anchors.length,
+      verifiedAnchors,
+      rejectedConfirmationsCount,
+      agentTerminationReason,
+      agentFailedBeforeFallback: mode === "deterministic",
+      traceEvents: agentTraceEvents,
+      deterministicDiscovery: deterministicSummary,
     }),
   };
 

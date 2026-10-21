@@ -29,3 +29,31 @@ export {
   ConnectionProvenanceOutputSchema,
   CategoryEvidenceOutputSchema,
 } from "./schema";
+export {
+  projectPublicTrace,
+  sanitizePublicText,
+  sanitizeRejectedReasons,
+  formatRejectionReasonLabel,
+  PublicSearchProcessSchema,
+  PublicSearchStepSchema,
+  PublicStepCountsSchema,
+  PublicFallbackDetailSchema,
+  PublicCacheStatusSchema,
+  PublicStepKindSchema,
+  PublicStepStatusSchema,
+  PublicQueryScopeSchema,
+  PublicProcessOutcomeSchema,
+} from "./trace-projection";
+export type {
+  PublicSearchProcess,
+  PublicSearchStep,
+  PublicStepCounts,
+  PublicFallbackDetail,
+  PublicCacheStatus,
+  PublicStepKind,
+  PublicStepStatus,
+  PublicQueryScope,
+  PublicProcessOutcome,
+  DeterministicDiscoverySummary,
+  TraceProjectionInput,
+} from "./trace-projection";

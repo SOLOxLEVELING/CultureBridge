@@ -16,6 +16,15 @@ export type {
   VerifiedAnchor,
   AnchorVerificationResult,
 } from "./kit-handler";
+export {
+  projectPublicTrace,
+  PublicSearchProcessSchema,
+  PublicSearchStepSchema,
+} from "../output";
+export type {
+  PublicSearchProcess,
+  PublicSearchStep,
+} from "../output";
 
 export {
   handleAnchorSearch,

@@ -4,7 +4,13 @@ import type {
   AnchorCandidate,
   AnchorSearchResponse,
 } from "../api/anchor-search-handler";
-import { StructuredOutputSchema } from "../output/schema";
+import {
+  StructuredOutputSchema,
+  isValidCoordinate,
+  projectPublicTrace,
+  PublicSearchProcessSchema,
+} from "../output";
+import type { PublicSearchProcess } from "../output";
 import type { RecommendationLabel } from "../recommend";
 import {
   DEFAULT_CITY,
@@ -38,6 +44,26 @@ export interface AnchorItem {
   isEditing: boolean;
 }
 
+export interface SafeConnectionProvenance {
+  anchorId: string;
+  anchorName: string;
+  rank: number;
+  queryId: string;
+}
+
+export interface SafeCategoryEvidence {
+  requestedCategory: string;
+  score: number;
+  position: number | null;
+  conflict: boolean;
+}
+
+export interface SafeTagInfo {
+  id: string;
+  name: string;
+  type: string;
+}
+
 export interface SafeRecommendationItem {
   entityId: string;
   name: string;
@@ -48,7 +74,14 @@ export interface SafeRecommendationItem {
   website: string | null;
   phone: string | null;
   priceLevel: number | null;
+  location: { lat: number; lon: number } | null;
+  mappable: boolean;
+  queryMode: "single-anchor" | "blended" | "mixed";
+  connectionProvenance: SafeConnectionProvenance[];
+  categoryEvidence: SafeCategoryEvidence | null;
+  tags: SafeTagInfo[];
   explanationText: string;
+  explanationFallback: boolean;
   anchorNames: string[];
 }
 
@@ -58,13 +91,18 @@ export interface SafeKitCompletion {
   city: string;
   mode: "agent" | "deterministic";
   cached: boolean;
+  durationMs: number;
+  anchorCount: number;
+  filteredInvalidCount: number;
   recommendations: SafeRecommendationItem[];
+  searchProcess: PublicSearchProcess;
 }
 
 export interface GenerationState {
   status: "idle" | "loading" | "success" | "partial" | "empty" | "error";
   result: SafeKitCompletion | null;
   errorMessage: string | null;
+  errorProcess?: PublicSearchProcess | null;
 }
 
 export type FlowPhase =
@@ -98,7 +136,7 @@ const SENSITIVE_PATTERN =
   /api.?key|secret|credential|token|password|authorization|bearer|qloo_api_key|aws_access_key|aws_secret|sk-[a-z0-9]/i;
 
 const INTERNAL_LEAK_PATTERN =
-  /hackathon\.api\.qloo\.com|\/v2\/insights|toolCallCount|qlooOutboundRequests|finalization|at\s+\w+\s*\(/i;
+  /hackathon\.api\.qloo\.com|\/v2\/insights|toolCallCount|qlooOutboundRequests|finalization|\bat\s+[A-Za-z0-9_$.]+\s*\([^)]*:\d+:\d+\)/i;
 
 export function sanitizeUiError(
   raw: unknown,
@@ -836,20 +874,39 @@ function sanitizeWebsiteUrl(raw: string | null): string | null {
   }
 }
 
+function extractSafeProcess(
+  rawProcess: unknown,
+): PublicSearchProcess | null {
+  if (typeof rawProcess !== "object" || rawProcess === null) return null;
+  const parsed = PublicSearchProcessSchema.safeParse(rawProcess);
+  if (!parsed.success) return null;
+  const serialized = JSON.stringify(parsed.data);
+  if (
+    SENSITIVE_PATTERN.test(serialized) ||
+    INTERNAL_LEAK_PATTERN.test(serialized) ||
+    /\btrace\b/i.test(serialized)
+  ) {
+    return null;
+  }
+  return parsed.data;
+}
+
 export function parseSafeKitResponse(
   raw: unknown,
   httpStatus: number,
 ):
   | { ok: true; completion: SafeKitCompletion }
-  | { ok: false; errorMessage: string } {
+  | { ok: false; errorMessage: string; errorProcess: PublicSearchProcess | null } {
   if (typeof raw !== "object" || raw === null) {
     return {
       ok: false,
       errorMessage: "Received an invalid response from the server.",
+      errorProcess: null,
     };
   }
 
   const obj = raw as Record<string, unknown>;
+  const safeErrorProcess = extractSafeProcess(obj.searchProcess);
 
   if (httpStatus >= 400 || obj.status === "error" || !obj.output) {
     const errObj =
@@ -868,6 +925,7 @@ export function parseSafeKitResponse(
     return {
       ok: false,
       errorMessage: sanitizeUiError(rawMsg),
+      errorProcess: safeErrorProcess,
     };
   }
 
@@ -876,6 +934,7 @@ export function parseSafeKitResponse(
     return {
       ok: false,
       errorMessage: "Received an unexpected output format from the server.",
+      errorProcess: safeErrorProcess,
     };
   }
 
@@ -891,23 +950,68 @@ export function parseSafeKitResponse(
       : "";
   const mode = metaObj.mode === "deterministic" ? "deterministic" : "agent";
   const cached = Boolean(metaObj.cached);
+  const durationMs =
+    typeof metaObj.durationMs === "number" &&
+    Number.isFinite(metaObj.durationMs) &&
+    metaObj.durationMs >= 0
+      ? Math.round(metaObj.durationMs)
+      : 0;
+  const anchorCount =
+    typeof metaObj.anchorCount === "number" &&
+    Number.isFinite(metaObj.anchorCount) &&
+    metaObj.anchorCount >= 0
+      ? Math.floor(metaObj.anchorCount)
+      : 0;
 
   // Only include recommendations with verified explanations; strip any internal data
   const recommendations: SafeRecommendationItem[] = output.recommendations
     .filter((rec) => rec.explanation.verified)
-    .map((rec) => ({
-      entityId: rec.entityId,
-      name: rec.name,
-      label: rec.label,
-      categories: rec.categories,
-      neighborhood: rec.details.neighborhood,
-      address: rec.details.address,
-      website: sanitizeWebsiteUrl(rec.details.website),
-      phone: rec.details.phone,
-      priceLevel: rec.details.priceLevel,
-      explanationText: rec.explanation.text,
-      anchorNames: rec.explanation.basis.anchorNames,
-    }));
+    .map((rec) => {
+      const validLocation =
+        rec.details.location &&
+        isValidCoordinate(rec.details.location.lat, rec.details.location.lon)
+          ? { lat: rec.details.location.lat, lon: rec.details.location.lon }
+          : null;
+      const mappable = Boolean(rec.details.mappable && validLocation !== null);
+
+      return {
+        entityId: rec.entityId,
+        name: rec.name,
+        label: rec.label,
+        categories: rec.categories,
+        neighborhood: rec.details.neighborhood,
+        address: rec.details.address,
+        website: sanitizeWebsiteUrl(rec.details.website),
+        phone: rec.details.phone,
+        priceLevel: rec.details.priceLevel,
+        location: validLocation,
+        mappable,
+        queryMode: rec.provenance.queryMode,
+        connectionProvenance: rec.provenance.connectionProvenance.map((cp) => ({
+          anchorId: cp.anchorId,
+          anchorName: cp.anchorName,
+          rank: cp.rank,
+          queryId: cp.queryId,
+        })),
+        categoryEvidence: rec.provenance.categoryEvidence
+          ? {
+              requestedCategory:
+                rec.provenance.categoryEvidence.requestedCategory,
+              score: rec.provenance.categoryEvidence.score,
+              position: rec.provenance.categoryEvidence.position,
+              conflict: rec.provenance.categoryEvidence.conflict,
+            }
+          : null,
+        tags: rec.tags.map((t) => ({
+          id: t.id,
+          name: t.name,
+          type: t.type,
+        })),
+        explanationText: rec.explanation.text,
+        explanationFallback: rec.explanation.fallback,
+        anchorNames: rec.explanation.basis.anchorNames,
+      };
+    });
 
   const effectiveStatus: "success" | "partial" | "empty" =
     recommendations.length === 0
@@ -925,6 +1029,36 @@ export function parseSafeKitResponse(
         : `Found ${recommendations.length} verified recommendation${recommendations.length === 1 ? "" : "s"}${city ? ` in ${city}` : ""}.`
       : output.summary;
 
+  const searchProcess: PublicSearchProcess =
+    extractSafeProcess(obj.searchProcess) ??
+    projectPublicTrace({
+      city: city || "Selected city",
+      mode,
+      cached,
+      durationMs,
+      outcome:
+        effectiveStatus === "empty"
+          ? "empty"
+          : effectiveStatus === "partial"
+            ? "partial"
+            : "completed",
+      anchorCount,
+      deterministicDiscovery:
+        mode === "deterministic"
+          ? {
+              resolvedAnchorNames: [],
+              unresolvedCount: 0,
+              singleAnchorQueriesCount: Math.max(1, anchorCount),
+              blendedQueryRun: true,
+              acceptedCount: recommendations.length,
+              reviewCount: 0,
+              rejectedCount: 0,
+              rejectedReasons: {},
+              failureCount: 0,
+            }
+          : undefined,
+    });
+
   return {
     ok: true,
     completion: {
@@ -933,7 +1067,11 @@ export function parseSafeKitResponse(
       city,
       mode,
       cached,
+      durationMs,
+      anchorCount,
+      filteredInvalidCount: output.invalidIds.length,
       recommendations,
+      searchProcess,
     },
   };
 }
@@ -945,13 +1083,15 @@ export function applyKitGenerationResponse(
 ): FlowState {
   const parsed = parseSafeKitResponse(raw, httpStatus);
   if (!parsed.ok) {
-    // Preserve profile, city, and confirmed anchors on error so the user can retry
+    // Preserve profile, city, and confirmed anchors on error so the user can retry.
+    // Never retain stale results from a previous city/profile request.
     return {
       ...state,
       generation: {
         status: "error",
         result: null,
         errorMessage: parsed.errorMessage,
+        errorProcess: parsed.errorProcess,
       },
     };
   }
@@ -962,6 +1102,7 @@ export function applyKitGenerationResponse(
       status: parsed.completion.status,
       result: parsed.completion,
       errorMessage: null,
+      errorProcess: null,
     },
   };
 }
@@ -979,6 +1120,7 @@ export function applyKitGenerationError(
         error,
         "Unable to reach the server. Your anchors are saved — please retry.",
       ),
+      errorProcess: null,
     },
   };
 }
