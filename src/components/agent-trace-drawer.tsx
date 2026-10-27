@@ -12,14 +12,14 @@ export interface AgentTraceDrawerProps {
 }
 
 const STEP_KIND_LABELS: Record<PublicSearchStep["kind"], string> = {
-  anchor_verification: "Anchor verification",
-  anchor_resolution: "Anchor lookup",
+  anchor_verification: "Interest verification",
+  anchor_resolution: "Interest lookup",
   place_discovery: "Place discovery",
-  tag_lookup: "Category tag lookup",
+  tag_lookup: "Category lookup",
   fallback_step: "Fallback stage",
-  output_verification: "Output verification",
-  agent_planning: "Agent step",
-  completion: "Run boundary",
+  output_verification: "Quality screening",
+  agent_planning: "Discovery step",
+  completion: "Summary",
 };
 
 const STEP_STATUS_STYLES: Record<
@@ -29,12 +29,12 @@ const STEP_STATUS_STYLES: Record<
   ok: {
     badge: "Done",
     symbol: "✓",
-    className: "border-cb-confirmed/30 bg-cb-confirmed-soft text-cb-confirmed",
+    className: "border-cb-confirmed/25 bg-cb-confirmed-soft text-cb-confirmed",
   },
   recovered: {
     badge: "Recovered",
     symbol: "↺",
-    className: "border-cb-confirmed/30 bg-cb-confirmed-soft text-cb-confirmed",
+    className: "border-cb-confirmed/25 bg-cb-confirmed-soft text-cb-confirmed",
   },
   warning: {
     badge: "0 accepted",
@@ -59,16 +59,16 @@ function formatCacheBadge(
   if (!status) return null;
   if (status === "cached") return "Cached (24h)";
   if (status === "mixed") return "Live + cached";
-  return "Fetched live";
+  return "Live search";
 }
 
 function formatQueryScope(
   scope: PublicSearchStep["queryScope"],
 ): string | null {
   if (!scope) return null;
-  if (scope === "single-and-blended") return "Single-anchor + blended";
-  if (scope === "single-anchor") return "Single-anchor";
-  return "Blended profile";
+  if (scope === "single-and-blended") return "Single-interest + combined";
+  if (scope === "single-anchor") return "Single-interest";
+  return "Combined profile";
 }
 
 export function AgentTraceDrawer({
@@ -94,18 +94,23 @@ export function AgentTraceDrawer({
     <section
       aria-labelledby={headingId}
       onKeyDown={handleKeyDown}
-      className="rounded-lg border border-cb-border bg-cb-surface/40"
+      className="overflow-hidden rounded-2xl border border-cb-border bg-cb-card/80 transition-colors"
     >
-      {/* Header */}
-      <div className="flex flex-wrap items-center justify-between gap-3 px-4 py-3.5">
-        <div className="space-y-0.5">
-          <h4
+      {/* Compact bar */}
+      <div className="flex flex-wrap items-center justify-between gap-3 px-4 py-3 sm:px-5">
+        <div className="flex flex-wrap items-baseline gap-x-2.5 gap-y-1">
+          <h3
             id={headingId}
             className="text-sm font-semibold text-foreground"
           >
             How these suggestions were found
-          </h4>
-          <p className="text-sm text-cb-muted">{process.outcomeSummary}</p>
+          </h3>
+          <span className="hidden text-cb-border-strong sm:inline" aria-hidden="true">
+            ·
+          </span>
+          <p className="text-xs text-cb-muted sm:text-sm">
+            {process.outcomeSummary}
+          </p>
         </div>
 
         <button
@@ -113,44 +118,46 @@ export function AgentTraceDrawer({
           aria-expanded={isOpen}
           aria-controls={panelId}
           onClick={onToggle}
-          className="inline-flex shrink-0 items-center gap-1.5 rounded-lg border border-cb-border bg-background px-3.5 py-2 text-sm font-medium text-foreground hover:bg-cb-surface focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-cb-accent"
+          className="inline-flex shrink-0 items-center gap-1.5 rounded-full border border-cb-border bg-background px-3.5 py-1.5 text-xs font-medium text-foreground transition-colors hover:border-cb-border-strong hover:bg-cb-surface focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-cb-accent"
         >
-          {isOpen ? "Hide" : "Show details"}
-          <span className="text-xs text-cb-muted">
-            ({process.steps.length} steps)
-          </span>
+          <span>{isOpen ? "Hide details" : "Show details"}</span>
+          <span className="text-cb-muted">({process.steps.length})</span>
         </button>
       </div>
 
-      {/* Expanded panel */}
+      {/* Expanded transparency sheet */}
       {isOpen && (
         <div
           id={panelId}
           role="region"
           aria-labelledby={headingId}
-          className="space-y-4 border-t border-cb-border p-4 text-sm"
+          className="space-y-4 border-t border-cb-border bg-background/50 p-4 text-sm sm:p-5"
         >
-          {/* Run overview */}
-          <dl className="grid grid-cols-1 gap-3 rounded-lg border border-cb-border bg-background p-4 sm:grid-cols-2 lg:grid-cols-4">
+          {/* Overview metadata */}
+          <dl className="grid grid-cols-2 gap-3 rounded-xl border border-cb-border bg-cb-card p-3.5 sm:grid-cols-4">
             <div>
-              <dt className="text-xs font-medium text-cb-muted">City</dt>
-              <dd className="mt-0.5 font-medium">{process.city}</dd>
+              <dt className="text-xs text-cb-muted">Destination</dt>
+              <dd className="mt-0.5 font-medium text-foreground">
+                {process.city}
+              </dd>
             </div>
             <div>
-              <dt className="text-xs font-medium text-cb-muted">Mode</dt>
-              <dd className="mt-0.5 font-medium">{process.modeLabel}</dd>
+              <dt className="text-xs text-cb-muted">Discovery method</dt>
+              <dd className="mt-0.5 font-medium text-foreground">
+                {process.modeLabel}
+              </dd>
             </div>
             <div>
-              <dt className="text-xs font-medium text-cb-muted">Cache</dt>
-              <dd className="mt-0.5 font-mono text-xs">
+              <dt className="text-xs text-cb-muted">Data source</dt>
+              <dd className="mt-0.5 text-xs font-medium text-foreground">
                 {process.cached
                   ? "24h response cache"
                   : formatCacheBadge(process.qlooCacheStatus)}
               </dd>
             </div>
             <div>
-              <dt className="text-xs font-medium text-cb-muted">Duration</dt>
-              <dd className="mt-0.5 font-mono text-xs">
+              <dt className="text-xs text-cb-muted">Search time</dt>
+              <dd className="mt-0.5 text-xs font-medium text-foreground">
                 {process.durationMs} ms
               </dd>
             </div>
@@ -158,15 +165,15 @@ export function AgentTraceDrawer({
 
           {/* Fallback notice */}
           {process.fallbackTriggered && (
-            <div className="rounded-lg border border-cb-border bg-background p-4">
+            <div className="rounded-xl border border-cb-border bg-cb-card p-4">
               <div className="flex flex-wrap items-center justify-between gap-2">
-                <span className="font-medium">
+                <span className="font-medium text-foreground">
                   {process.mode === "deterministic"
-                    ? "Deterministic fallback used"
-                    : "Category fallback chain executed"}
+                    ? "Direct taste-graph fallback used"
+                    : "Broader category search used"}
                 </span>
                 <span
-                  className={`rounded-md px-2 py-0.5 text-xs font-medium ${
+                  className={`rounded-full px-2.5 py-0.5 text-xs font-medium ${
                     process.fallbackRecovered
                       ? "bg-cb-confirmed-soft text-cb-confirmed"
                       : "bg-cb-warning-soft text-cb-warning"
@@ -176,62 +183,66 @@ export function AgentTraceDrawer({
                 </span>
               </div>
               {process.fallbackReason && (
-                <p className="mt-1.5 text-cb-muted">
+                <p className="mt-1.5 text-xs text-cb-muted leading-relaxed">
                   {process.fallbackReason}
                 </p>
               )}
             </div>
           )}
 
-          {/* Validator totals */}
-          <div className="rounded-lg border border-cb-border bg-background p-4">
+          {/* Quality screening summary */}
+          <div className="rounded-xl border border-cb-border bg-cb-card p-4">
             <div className="flex flex-wrap items-center justify-between gap-2">
-              <span className="font-medium">Quality check totals</span>
-              <div className="flex flex-wrap items-center gap-3 font-mono text-xs">
-                <span className="text-cb-confirmed">
+              <span className="font-medium text-foreground">
+                Venue quality screening
+              </span>
+              <div className="flex flex-wrap items-center gap-3 text-xs">
+                <span className="font-medium text-cb-confirmed">
                   Accepted: <strong>{process.totals.accepted}</strong>
                 </span>
                 <span className="text-cb-muted">
-                  Review: <strong>{process.totals.review}</strong>
+                  Held for review: <strong>{process.totals.review}</strong>
                 </span>
                 <span className="text-cb-muted">
-                  Rejected: <strong>{process.totals.rejected}</strong>
+                  Filtered out: <strong>{process.totals.rejected}</strong>
                 </span>
               </div>
             </div>
 
             {rejectionEntries.length > 0 ? (
-              <div className="mt-2.5 flex flex-wrap items-center gap-1.5 border-t border-cb-border pt-2.5">
-                <span className="text-xs text-cb-muted">Filtered out:</span>
+              <div className="mt-3 flex flex-wrap items-center gap-1.5 border-t border-cb-border pt-2.5">
+                <span className="text-xs text-cb-muted">
+                  Excluded during screening:
+                </span>
                 {rejectionEntries.map(([reasonKey, count]) => (
                   <span
                     key={reasonKey}
-                    className="rounded-md bg-cb-surface px-2 py-0.5 font-mono text-xs text-cb-muted"
+                    className="rounded-full bg-cb-surface px-2.5 py-0.5 text-xs text-cb-muted"
                   >
                     {formatRejectionReasonLabel(reasonKey)}: {count}
                   </span>
                 ))}
               </div>
             ) : (
-              <p className="mt-1.5 text-xs text-cb-muted">
-                All shown places passed checks for closed venues, hotels,
-                transit stations, duplicates, and category conflicts.
+              <p className="mt-1.5 text-xs text-cb-muted leading-relaxed">
+                Every place shown passed checks excluding hotels, transit hubs,
+                closed venues, duplicates, and category mismatches.
               </p>
             )}
           </div>
 
-          {/* Step log */}
+          {/* Step-by-step discovery log */}
           <div className="space-y-2">
-            <div className="flex items-center justify-between">
-              <span className="font-medium">Step-by-step log</span>
-            </div>
+            <span className="text-xs font-medium text-cb-muted">
+              Discovery steps
+            </span>
 
             {process.steps.length === 0 ? (
-              <p className="rounded-lg border border-cb-border bg-background p-4 text-cb-muted">
+              <p className="rounded-xl border border-cb-border bg-cb-card p-4 text-xs text-cb-muted">
                 No step events recorded for this run.
               </p>
             ) : (
-              <ol className="divide-y divide-cb-border rounded-lg border border-cb-border bg-background">
+              <ol className="divide-y divide-cb-border rounded-xl border border-cb-border bg-cb-card">
                 {process.steps.map((step) => {
                   const statusStyle = STEP_STATUS_STYLES[step.status];
                   const scopeLabel = formatQueryScope(step.queryScope);
@@ -245,29 +256,31 @@ export function AgentTraceDrawer({
                   return (
                     <li key={step.stepNumber} className="space-y-1.5 p-3.5">
                       <div className="flex flex-wrap items-center justify-between gap-2">
-                        <div className="flex flex-wrap items-center gap-1.5">
-                          <span className="rounded bg-cb-surface px-1.5 py-0.5 font-mono text-xs font-semibold text-cb-muted">
-                            #{step.stepNumber}
+                        <div className="flex flex-wrap items-center gap-2">
+                          <span className="inline-flex h-5 min-w-5 items-center justify-center rounded-full bg-cb-surface px-1.5 text-xs font-semibold text-cb-muted">
+                            {step.stepNumber}
                           </span>
-                          <span className="rounded-md bg-cb-surface px-2 py-0.5 text-xs text-cb-muted">
+                          <span className="font-medium text-foreground">
+                            {step.title}
+                          </span>
+                          <span className="rounded-full bg-cb-surface px-2.5 py-0.5 text-xs text-cb-muted">
                             {STEP_KIND_LABELS[step.kind]}
                           </span>
                           {step.attemptNumber > 1 && (
-                            <span className="rounded-md bg-cb-surface px-2 py-0.5 text-xs text-cb-muted">
+                            <span className="rounded-full bg-cb-surface px-2.5 py-0.5 text-xs text-cb-muted">
                               Attempt #{step.attemptNumber}
                             </span>
                           )}
-                          <span className="font-medium">{step.title}</span>
                         </div>
 
-                        <div className="flex flex-wrap items-center gap-1.5 font-mono text-xs">
+                        <div className="flex flex-wrap items-center gap-1.5 text-xs">
                           {scopeLabel && (
-                            <span className="rounded-md bg-cb-surface px-2 py-0.5 text-xs text-cb-muted">
+                            <span className="rounded-full bg-cb-surface px-2.5 py-0.5 text-cb-muted">
                               {scopeLabel}
                             </span>
                           )}
                           {stepCacheLabel && (
-                            <span className="rounded-md bg-cb-surface px-2 py-0.5 text-xs text-cb-muted">
+                            <span className="rounded-full bg-cb-surface px-2.5 py-0.5 text-cb-muted">
                               {stepCacheLabel}
                             </span>
                           )}
@@ -277,7 +290,7 @@ export function AgentTraceDrawer({
                             </span>
                           )}
                           <span
-                            className={`inline-flex items-center gap-1 rounded-md border px-1.5 py-0.5 text-xs font-medium ${statusStyle.className}`}
+                            className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-xs font-medium ${statusStyle.className}`}
                           >
                             <span aria-hidden="true">{statusStyle.symbol}</span>
                             {statusStyle.badge}
@@ -285,19 +298,19 @@ export function AgentTraceDrawer({
                         </div>
                       </div>
 
-                      <p className="text-cb-muted leading-relaxed">
+                      <p className="pl-7 text-xs text-cb-muted leading-relaxed">
                         {step.detail}
                       </p>
 
                       {step.counts && (
-                        <div className="flex flex-wrap items-center gap-x-3 gap-y-1 pt-0.5 font-mono text-xs text-cb-muted">
+                        <div className="flex flex-wrap items-center gap-x-3 gap-y-1 pl-7 pt-0.5 text-xs text-cb-muted">
                           <span>Accepted: {step.counts.accepted}</span>
                           <span>Review: {step.counts.review}</span>
-                          <span>Rejected: {step.counts.rejected}</span>
+                          <span>Filtered: {step.counts.rejected}</span>
                           {stepRejections.map(([rKey, rCount]) => (
                             <span
                               key={rKey}
-                              className="rounded bg-cb-surface px-1.5 py-0.5"
+                              className="rounded-full bg-cb-surface px-2 py-0.5"
                             >
                               {formatRejectionReasonLabel(rKey)}: {rCount}
                             </span>

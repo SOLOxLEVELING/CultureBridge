@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef } from "react";
+import { useCallback, useEffect, useMemo, useRef } from "react";
 import L from "leaflet";
 import {
   computeMapBounds,
@@ -27,17 +27,24 @@ function escapeHtml(text: string): string {
     .replace(/'/g, "&#39;");
 }
 
-function createPinIcon(marker: MapMarkerItem, isSelected: boolean): L.DivIcon {
+function createPinIcon(
+  marker: MapMarkerItem,
+  isSelected: boolean,
+  showSymbol: boolean,
+): L.DivIcon {
   const safeSymbol = escapeHtml(marker.symbol);
   const safeName = escapeHtml(marker.name);
   const safeBadge = escapeHtml(marker.badgeText);
   const labelClass = getLabelPresentation(marker.label).markerClassName;
+  const innerHtml = showSymbol
+    ? `<span aria-hidden="true">${safeSymbol}</span><span>${marker.orderIndex}</span>`
+    : `<span>${marker.orderIndex}</span>`;
 
   return L.divIcon({
     className: "cb-map-pin-wrapper",
-    html: `<span class="cb-map-pin ${labelClass}" data-selected="${isSelected ? "true" : "false"}" title="${safeName} (${safeBadge})" aria-label="${safeName} (${safeBadge})"><span>${safeSymbol}</span><span>${marker.orderIndex}</span></span>`,
-    iconSize: [36, 26],
-    iconAnchor: [18, 13],
+    html: `<span class="cb-map-pin ${labelClass}" data-selected="${isSelected ? "true" : "false"}" title="${safeName} (${safeBadge})" aria-label="${marker.orderIndex}. ${safeName} (${safeBadge})">${innerHtml}</span>`,
+    iconSize: showSymbol ? [38, 30] : [30, 30],
+    iconAnchor: showSymbol ? [19, 15] : [15, 15],
   });
 }
 
@@ -52,6 +59,7 @@ export default function ResultsMap({
   const mapRef = useRef<L.Map | null>(null);
   const markersLayerRef = useRef<Map<string, L.Marker>>(new Map());
   const prevSelectedIdRef = useRef<string | null>(selectedEntityId);
+  const lastFittedWidthRef = useRef<number>(0);
   const onSelectRef = useRef(onSelectEntity);
 
   useEffect(() => {
@@ -68,22 +76,29 @@ export default function ResultsMap({
     [recommendations, selectedEntityId],
   );
 
+  const hasMixedLabels = useMemo(() => {
+    const distinct = new Set(markers.map((m) => m.label));
+    return distinct.size > 1;
+  }, [markers]);
 
-  function fitAllMarkers() {
-    const map = mapRef.current;
-    if (!map || viewport.mode === "empty") return;
-    if (viewport.mode === "single") {
-      map.setView([viewport.center.lat, viewport.center.lon], viewport.zoom, {
-        animate: true,
-      });
-    } else {
-      const bounds = L.latLngBounds(
-        [viewport.southWest.lat, viewport.southWest.lon],
-        [viewport.northEast.lat, viewport.northEast.lon],
-      );
-      map.fitBounds(bounds, { padding: [32, 32], maxZoom: 15 });
-    }
-  }
+  const fitAllMarkers = useCallback(
+    (animate: boolean = true) => {
+      const map = mapRef.current;
+      if (!map || viewport.mode === "empty") return;
+      if (viewport.mode === "single") {
+        map.setView([viewport.center.lat, viewport.center.lon], viewport.zoom, {
+          animate,
+        });
+      } else {
+        const bounds = L.latLngBounds(
+          [viewport.southWest.lat, viewport.southWest.lon],
+          [viewport.northEast.lat, viewport.northEast.lon],
+        );
+        map.fitBounds(bounds, { padding: [36, 36], maxZoom: 15, animate });
+      }
+    },
+    [viewport],
+  );
 
   // Initialize & update Leaflet map when mappable markers change
   useEffect(() => {
@@ -114,6 +129,7 @@ export default function ResultsMap({
       }).addTo(map);
 
       mapRef.current = map;
+      lastFittedWidthRef.current = 0;
     }
 
     const map = mapRef.current;
@@ -127,7 +143,7 @@ export default function ResultsMap({
     for (const item of markers) {
       const isSelected = item.entityId === selectedEntityId;
       const leafletMarker = L.marker([item.lat, item.lon], {
-        icon: createPinIcon(item, isSelected),
+        icon: createPinIcon(item, isSelected, hasMixedLabels),
         keyboard: true,
         title: `${item.orderIndex}. ${item.name} (${item.badgeText})`,
         alt: `${item.name} — ${item.badgeText}`,
@@ -141,19 +157,15 @@ export default function ResultsMap({
       layerMap.set(item.entityId, leafletMarker);
     }
 
-    if (viewport.mode === "single") {
-      map.setView([viewport.center.lat, viewport.center.lon], viewport.zoom, {
-        animate: false,
-      });
-    } else if (viewport.mode === "bounds") {
-      const bounds = L.latLngBounds(
-        [viewport.southWest.lat, viewport.southWest.lon],
-        [viewport.northEast.lat, viewport.northEast.lon],
-      );
-      map.fitBounds(bounds, { padding: [32, 32], maxZoom: 15, animate: false });
+    if (container.clientWidth > 0 && container.clientHeight > 0) {
+      map.invalidateSize({ animate: false });
+      fitAllMarkers(false);
+      lastFittedWidthRef.current = container.clientWidth;
+    } else {
+      lastFittedWidthRef.current = 0;
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [markers, viewport]);
+  }, [markers, viewport, hasMixedLabels]);
 
   // Synchronize marker icons and map focus when selectedEntityId changes
   useEffect(() => {
@@ -165,7 +177,7 @@ export default function ResultsMap({
       const leafletMarker = layerMap.get(item.entityId);
       if (!leafletMarker) continue;
       const isSelected = item.entityId === selectedEntityId;
-      leafletMarker.setIcon(createPinIcon(item, isSelected));
+      leafletMarker.setIcon(createPinIcon(item, isSelected, hasMixedLabels));
       leafletMarker.setZIndexOffset(isSelected ? 1000 : 0);
     }
 
@@ -175,17 +187,58 @@ export default function ResultsMap({
     if (didSelectionChange && selectedEntityId) {
       const targetMarker = markers.find((m) => m.entityId === selectedEntityId);
       if (targetMarker) {
-        const currentZoom = map.getZoom();
-        const targetZoom =
-          typeof currentZoom === "number" && currentZoom >= 13
-            ? currentZoom
-            : 14;
-        map.setView([targetMarker.lat, targetMarker.lon], targetZoom, {
-          animate: true,
-        });
+        const container = containerRef.current;
+        if (container && container.clientWidth > 0) {
+          map.invalidateSize({ animate: false });
+          const currentZoom = map.getZoom();
+          const targetZoom =
+            typeof currentZoom === "number" &&
+            currentZoom >= 13 &&
+            currentZoom <= 16
+              ? currentZoom
+              : 14;
+          map.setView([targetMarker.lat, targetMarker.lon], targetZoom, {
+            animate: true,
+          });
+        }
       }
     }
-  }, [selectedEntityId, markers]);
+  }, [selectedEntityId, markers, hasMixedLabels]);
+
+  // ResizeObserver so mobile List/Map tab toggles or viewport changes always render tiles and fit bounds properly
+  useEffect(() => {
+    if (typeof window === "undefined" || typeof ResizeObserver === "undefined") {
+      return;
+    }
+    const container = containerRef.current;
+    if (!container) return;
+
+    const observer = new ResizeObserver((entries) => {
+      const entry = entries[0];
+      if (!entry || !mapRef.current) return;
+      const { width, height } = entry.contentRect;
+      if (width > 0 && height > 0) {
+        const map = mapRef.current;
+        map.invalidateSize({ animate: false });
+        if (Math.abs(width - lastFittedWidthRef.current) > 24) {
+          lastFittedWidthRef.current = width;
+          const activeMarker = selectedEntityId
+            ? markers.find((m) => m.entityId === selectedEntityId)
+            : null;
+          if (activeMarker) {
+            map.setView([activeMarker.lat, activeMarker.lon], 14, {
+              animate: false,
+            });
+          } else {
+            fitAllMarkers(false);
+          }
+        }
+      }
+    });
+
+    observer.observe(container);
+    return () => observer.disconnect();
+  }, [fitAllMarkers, markers, selectedEntityId]);
 
   // Clean up Leaflet instance on unmount
   useEffect(() => {
@@ -205,9 +258,9 @@ export default function ResultsMap({
       <div
         role="region"
         aria-label={`${city || "Destination"} map`}
-        className="rounded-lg border border-cb-border bg-cb-surface/50 p-6"
+        className="rounded-2xl border border-cb-border bg-cb-card p-6"
       >
-        <h4 className="text-sm font-semibold">
+        <h4 className="text-sm font-semibold text-foreground">
           {city || "Destination"} map
         </h4>
         <p className="mt-1.5 text-sm text-cb-muted leading-relaxed">
@@ -215,7 +268,7 @@ export default function ResultsMap({
             ? "No places to show on the map."
             : `None of the ${recommendations.length} ${
                 recommendations.length === 1 ? "place" : "places"
-              } had map coordinates. All recommendations are in the list.`}
+              } included map coordinates in Qloo's catalog. All places remain available in the list.`}
         </p>
       </div>
     );
@@ -225,24 +278,29 @@ export default function ResultsMap({
     <div
       role="region"
       aria-label={`${city || "Destination"} map`}
-      className="overflow-hidden rounded-lg border border-cb-border bg-background"
+      className="overflow-hidden rounded-2xl border border-cb-border bg-cb-card shadow-[0_2px_16px_rgba(35,34,30,0.04)]"
     >
       {/* Map header */}
-      <div className="flex items-center justify-between border-b border-cb-border bg-cb-surface/40 px-4 py-2.5">
+      <div className="flex items-center justify-between border-b border-cb-border px-4 py-3">
         <div className="flex items-center gap-2 text-sm">
-          <span className="font-semibold">{city} map</span>
-          <span className="text-cb-muted">
-            {markers.length} of {recommendations.length} mapped
+          <span className="font-semibold text-foreground">{city} map</span>
+          <span className="text-cb-border-strong" aria-hidden="true">
+            ·
+          </span>
+          <span className="text-xs text-cb-muted">
+            {markers.length === recommendations.length
+              ? `${markers.length} ${markers.length === 1 ? "place" : "places"} mapped`
+              : `${markers.length} of ${recommendations.length} mapped`}
           </span>
         </div>
 
         {markers.length > 1 && (
           <button
             type="button"
-            onClick={fitAllMarkers}
-            className="rounded-md border border-cb-border bg-background px-2.5 py-1 text-xs font-medium text-foreground hover:bg-cb-surface focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-cb-accent"
+            onClick={() => fitAllMarkers(true)}
+            className="rounded-full border border-cb-border bg-background px-3 py-1 text-xs font-medium text-foreground transition-colors hover:border-cb-border-strong hover:bg-cb-surface focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-cb-accent"
           >
-            Fit all
+            Fit all pins
           </button>
         )}
       </div>
@@ -250,64 +308,74 @@ export default function ResultsMap({
       {/* Map canvas */}
       <div
         ref={containerRef}
-        className="cb-leaflet-container h-64 w-full sm:h-80 lg:h-96"
+        className="cb-leaflet-container h-80 w-full sm:h-96 lg:h-[calc(100vh-11rem)] lg:min-h-[500px] lg:max-h-[700px]"
       />
 
-      {/* Pin selector */}
-      <div className="border-t border-cb-border bg-cb-surface/30 px-4 py-3">
-        <div
-          role="group"
-          aria-label="Map pins"
-          className="flex flex-wrap gap-1.5"
-        >
-          {markers.map((marker) => {
-            const isSelected = marker.entityId === selectedEntityId;
-            return (
-              <button
-                key={marker.entityId}
-                type="button"
-                aria-pressed={isSelected}
-                onClick={() => onSelectEntity(marker.entityId)}
-                className={`inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-left text-xs transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-cb-accent ${
-                  isSelected
-                    ? "border-cb-accent bg-cb-accent text-cb-accent-fg font-medium"
-                    : "border-cb-border bg-background text-foreground hover:bg-cb-surface"
-                }`}
-              >
-                <span className="font-semibold" aria-hidden="true">
+      {/* Compact pin bar & active place spotlight */}
+      <div className="border-t border-cb-border bg-background/60 px-4 py-3">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <span className="text-xs text-cb-muted">Pins</span>
+          <div
+            role="group"
+            aria-label="Map pins"
+            className="flex flex-wrap items-center gap-1.5"
+          >
+            {markers.map((marker) => {
+              const isSelected = marker.entityId === selectedEntityId;
+              return (
+                <button
+                  key={marker.entityId}
+                  type="button"
+                  aria-pressed={isSelected}
+                  title={`${marker.orderIndex}. ${marker.name}`}
+                  aria-label={`${marker.orderIndex}. ${marker.name}`}
+                  onClick={() => onSelectEntity(marker.entityId)}
+                  className={`inline-flex h-7 min-w-7 items-center justify-center rounded-full border px-2 text-xs font-semibold transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-cb-accent ${
+                    isSelected
+                      ? "border-cb-accent bg-cb-accent text-cb-accent-fg shadow-xs"
+                      : "border-cb-border bg-cb-card text-foreground hover:border-cb-accent/50 hover:bg-cb-surface"
+                  }`}
+                >
                   {marker.orderIndex}
-                </span>
-                <span className="max-w-[8rem] truncate">{marker.name}</span>
-              </button>
-            );
-          })}
+                </button>
+              );
+            })}
+          </div>
         </div>
 
-        {/* Selected place info */}
+        {/* Selected place spotlight */}
         {selection.selectedRecommendation && (
           <div
             role="status"
             aria-live="polite"
-            className="mt-2.5 flex flex-wrap items-center justify-between gap-2 rounded-lg border border-cb-border bg-background px-3.5 py-2.5 text-sm"
+            className="mt-3 flex items-center justify-between gap-3 rounded-xl border border-cb-border bg-cb-card px-3.5 py-2.5 text-sm shadow-2xs"
           >
             {selection.selectedMarker ? (
-              <div className="min-w-0">
-                <span className="font-medium">
-                  {selection.selectedMarker.name}
+              <div className="flex min-w-0 items-center gap-2.5">
+                <span
+                  className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-cb-accent text-xs font-bold text-cb-accent-fg"
+                  aria-hidden="true"
+                >
+                  {selection.selectedMarker.orderIndex}
                 </span>
-                {selection.selectedMarker.locationLine && (
-                  <p className="mt-0.5 truncate text-xs text-cb-muted">
-                    {selection.selectedMarker.locationLine}
+                <div className="min-w-0">
+                  <p className="truncate font-semibold text-foreground">
+                    {selection.selectedMarker.name}
                   </p>
-                )}
+                  {selection.selectedMarker.locationLine && (
+                    <p className="truncate text-xs text-cb-muted">
+                      {selection.selectedMarker.locationLine}
+                    </p>
+                  )}
+                </div>
               </div>
             ) : (
               <div className="min-w-0">
-                <span className="font-medium">
+                <p className="truncate font-semibold text-foreground">
                   {selection.selectedRecommendation.name}
-                </span>
-                <p className="mt-0.5 text-xs text-cb-muted">
-                  Not on map — no coordinates available
+                </p>
+                <p className="text-xs text-cb-muted">
+                  Not on map — no coordinates in catalog
                 </p>
               </div>
             )}
@@ -318,9 +386,9 @@ export default function ResultsMap({
                 onClick={() =>
                   onJumpToCard(selection.selectedRecommendation!.entityId)
                 }
-                className="shrink-0 rounded-lg border border-cb-border px-3 py-1.5 text-xs font-medium text-foreground hover:bg-cb-surface focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-cb-accent"
+                className="shrink-0 rounded-full border border-cb-border bg-background px-3 py-1.5 text-xs font-medium text-foreground transition-colors hover:bg-cb-surface focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-cb-accent"
               >
-                Jump to details
+                Show in list
               </button>
             )}
           </div>

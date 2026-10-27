@@ -29,7 +29,9 @@ import {
   formatRecommendationProvenance,
   getKitStatusPresentation,
   getLabelPresentation,
+  getPresetById,
   groupRecommendationsByCategory,
+  isTestedCity,
   removeAnchor,
   resolveSelectionState,
   selectCity,
@@ -42,7 +44,6 @@ import {
 } from "@/lib/input";
 import type {
   AnchorItem,
-  FlowPhase,
   FlowState,
   PresetId,
   SafeKitCompletion,
@@ -57,66 +58,12 @@ const ResultsMap = dynamic(() => import("./results-map"), {
     <div
       role="status"
       aria-live="polite"
-      className="flex h-64 w-full items-center justify-center rounded-lg border border-cb-border bg-cb-surface text-sm text-cb-muted sm:h-80 lg:h-96"
+      className="flex h-80 w-full items-center justify-center rounded-2xl border border-cb-border bg-cb-card text-sm text-cb-muted sm:h-96 lg:h-[520px]"
     >
-      Loading map…
+      Loading city map…
     </div>
   ),
 });
-
-const FLOW_PHASE_LABELS: Record<
-  FlowPhase,
-  { badge: string; instruction: string }
-> = {
-  initial_profile: {
-    badge: "Getting started",
-    instruction:
-      "Find matches for your interests below, then confirm each one is correct.",
-  },
-  editing_anchors: {
-    badge: "Adding interests",
-    instruction:
-      "Add up to five interests, then find and confirm matches for each.",
-  },
-  searching_matches: {
-    badge: "Searching",
-    instruction: "Looking for matches…",
-  },
-  waiting_for_confirmation: {
-    badge: "Pick the right matches",
-    instruction:
-      "We found possible matches — pick the correct one for each interest.",
-  },
-  lookup_failure: {
-    badge: "Needs attention",
-    instruction:
-      "Some interests couldn't be matched. Edit, retry, or remove them to continue.",
-  },
-  ready_to_generate: {
-    badge: "Ready",
-    instruction:
-      "All your interests are confirmed. Build your guide when you're ready.",
-  },
-  generating: {
-    badge: "Building your guide",
-    instruction: "Finding places that match your taste…",
-  },
-  success: {
-    badge: "Your guide is ready",
-    instruction:
-      "Explore your recommendations below, or edit your interests to get a different set.",
-  },
-  empty_recommendations: {
-    badge: "No places found",
-    instruction:
-      "No places met our quality checks for this combination. Try different interests or a different city.",
-  },
-  generation_error: {
-    badge: "Something went wrong",
-    instruction:
-      "Your city and confirmed interests are saved. You can try again whenever you're ready.",
-  },
-};
 
 export function StarterKitFlow() {
   const [state, setState] = useState<FlowState>(() => createInitialFlowState());
@@ -127,6 +74,8 @@ export function StarterKitFlow() {
     useState<SupportedAnchorType>("urn:entity:artist");
   const [isErrorTraceOpen, setIsErrorTraceOpen] = useState<boolean>(false);
   const [view, setView] = useState<"setup" | "results">("setup");
+  const [setupStep, setSetupStep] = useState<"start" | "interests">("start");
+  const [theme, setTheme] = useState<"light" | "dark">("light");
 
   const kitSubmittingRef = useRef<boolean>(false);
   const stateRef = useRef<FlowState>(state);
@@ -136,7 +85,6 @@ export function StarterKitFlow() {
 
   const baseId = useId();
   const phase = deriveFlowPhase(state);
-  const phaseMeta = FLOW_PHASE_LABELS[phase];
   const isGenerating = state.generation.status === "loading";
 
   const confirmedCount = state.anchors.filter(
@@ -145,20 +93,47 @@ export function StarterKitFlow() {
   const unsearchedAnchors = state.anchors.filter(
     (a) => a.status === "unsearched",
   );
+  const pendingAnchors = state.anchors.filter(
+    (a) => a.status !== "confirmed" || a.confirmedEntity === null,
+  );
   const isReady = canGenerateKit(state);
+  const activePreset = getPresetById(state.selectedPresetId);
+  const activeCityMeta = isTestedCity(state.city)
+    ? CITY_META[state.city]
+    : { name: state.city, country: "", note: "" };
+
+  useEffect(() => {
+    document.documentElement.setAttribute("data-theme", theme);
+  }, [theme]);
 
   // Transition to results view when generation produces a response
   useEffect(() => {
     const s = state.generation.status;
     if (s === "success" || s === "partial" || s === "empty") {
       setView("results");
-      window.scrollTo({ top: 0, behavior: "smooth" });
+      window.scrollTo({ top: 0, behavior: "instant" });
     }
   }, [state.generation.status]);
 
   function handleEditInterests() {
     setView("setup");
-    window.scrollTo({ top: 0, behavior: "smooth" });
+    setSetupStep("interests");
+    window.scrollTo({ top: 0, behavior: "instant" });
+  }
+
+  function handleContinueToInterests() {
+    setFormError(null);
+    if (state.selectedPresetId === "custom" && state.anchors.length === 0) {
+      setIsAddRowOpen(true);
+    }
+    setSetupStep("interests");
+    window.scrollTo({ top: 0, behavior: "instant" });
+  }
+
+  function handleBackToStart() {
+    setFormError(null);
+    setSetupStep("start");
+    window.scrollTo({ top: 0, behavior: "instant" });
   }
 
   function focusAnchorsEditor() {
@@ -209,6 +184,13 @@ export function StarterKitFlow() {
 
   function handleSelectPreset(presetId: PresetId) {
     setFormError(null);
+    // Preserve existing confirmations if clicking the already-selected preset without custom edits
+    if (
+      presetId === stateRef.current.selectedPresetId &&
+      !stateRef.current.hasEditedAnchors
+    ) {
+      return;
+    }
     const transition = selectPreset(stateRef.current, presetId);
     if (!transition.ok) {
       setFormError(transition.error);
@@ -363,455 +345,694 @@ export function StarterKitFlow() {
 
   return (
     <div className="min-h-screen bg-background text-foreground">
-      {/* Header */}
-      <header className="sticky top-0 z-20 border-b border-cb-border bg-background/95 backdrop-blur-sm">
-        <div className="mx-auto flex max-w-5xl items-center justify-between px-5 py-3.5 sm:px-8">
-          <span className="text-lg font-semibold tracking-tight">
-            CultureBridge
-          </span>
-          <div className="flex items-center gap-3 text-sm text-cb-muted">
-            <span>{state.city}</span>
-            {view === "setup" && state.anchors.length > 0 && (
-              <>
-                <span className="text-cb-border" aria-hidden="true">|</span>
-                <span>
-                  {confirmedCount} of {state.anchors.length} confirmed
-                </span>
-              </>
-            )}
+      {/* Editorial Masthead */}
+      <header className="border-b border-cb-border bg-background">
+        <div
+          className={`mx-auto flex items-center justify-between px-5 py-4 sm:px-8 ${
+            view === "results" ? "max-w-[1360px]" : "max-w-6xl"
+          }`}
+        >
+          <div className="flex items-center gap-2.5">
+            <span className="text-base font-semibold tracking-tight text-foreground sm:text-lg">
+              CultureBridge
+            </span>
+            <span className="text-cb-border-strong" aria-hidden="true">
+              /
+            </span>
+            <span className="text-sm font-medium text-cb-muted">
+              {state.city}
+            </span>
+          </div>
+
+          <div className="flex items-center gap-2.5">
             {view === "results" && (
               <button
                 type="button"
                 onClick={handleEditInterests}
-                className="rounded-lg border border-cb-border px-3 py-1 text-xs font-medium text-foreground hover:bg-cb-surface focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-cb-accent"
+                className="rounded-full border border-cb-border bg-cb-card px-3.5 py-1.5 text-xs font-medium text-foreground transition-colors hover:border-cb-border-strong hover:bg-cb-surface focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-cb-accent"
               >
                 Edit interests
               </button>
             )}
+
+            <button
+              type="button"
+              onClick={() =>
+                setTheme((prev) => (prev === "light" ? "dark" : "light"))
+              }
+              aria-label={
+                theme === "light"
+                  ? "Switch to dark theme"
+                  : "Switch to light theme"
+              }
+              title={
+                theme === "light"
+                  ? "Switch to dark theme"
+                  : "Switch to light theme"
+              }
+              className="inline-flex h-8 w-8 items-center justify-center rounded-full border border-cb-border bg-cb-card text-cb-muted transition-colors hover:border-cb-border-strong hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-cb-accent"
+            >
+              {theme === "light" ? (
+                <svg
+                  className="h-4 w-4"
+                  viewBox="0 0 20 20"
+                  fill="currentColor"
+                  aria-hidden="true"
+                >
+                  <path d="M17.293 13.293A8 8 0 016.707 2.707a8.001 8.001 0 1010.586 10.586z" />
+                </svg>
+              ) : (
+                <svg
+                  className="h-4 w-4"
+                  viewBox="0 0 20 20"
+                  fill="currentColor"
+                  aria-hidden="true"
+                >
+                  <path
+                    fillRule="evenodd"
+                    d="M10 2a1 1 0 011 1v1a1 1 0 11-2 0V3a1 1 0 011-1zm4 8a4 4 0 11-8 0 4 4 0 018 0zm-.464 4.95l.707.707a1 1 0 001.414-1.414l-.707-.707a1 1 0 00-1.414 1.414zm2.12-10.607a1 1 0 010 1.414l-.706.707a1 1 0 11-1.414-1.414l.707-.707a1 1 0 011.414 0zM17 11a1 1 0 100-2h-1a1 1 0 100 2h1zm-7 4a1 1 0 011 1v1a1 1 0 11-2 0v-1a1 1 0 011-1zM5.05 6.464A1 1 0 106.465 5.05l-.708-.707a1 1 0 00-1.414 1.414l.707.707zm1.414 8.486l-.707.707a1 1 0 01-1.414-1.414l.707-.707a1 1 0 011.414 1.414zM4 11a1 1 0 100-2H3a1 1 0 000 2h1z"
+                    clipRule="evenodd"
+                  />
+                </svg>
+              )}
+            </button>
           </div>
         </div>
       </header>
 
-      <main className="mx-auto max-w-5xl px-5 py-8 sm:px-8 sm:py-12">
-        {/* Setup workspace — only shown before generation */}
-        {view === "setup" && (
-        <div className="mx-auto max-w-2xl space-y-10">
-          {/* Hero introduction */}
-          <section aria-label="Introduction" className="space-y-2">
-            <h1 className="text-3xl font-semibold tracking-tight sm:text-4xl">
-              Discover {state.city} through what you already love
-            </h1>
-            <p className="max-w-lg text-base text-cb-muted">
-              Tell us about your favorite artists, shows, films, and brands.
-              We&rsquo;ll find places that match your taste.
-            </p>
-            <p
-              className="text-sm text-cb-muted"
-              role="status"
-              aria-live="polite"
+      <main
+        className={`mx-auto px-5 py-8 sm:px-8 sm:py-12 ${
+          view === "results" ? "max-w-[1360px]" : "max-w-6xl"
+        }`}
+      >
+        {/* ── SETUP VIEW: TWO-STAGE GUIDED EXPERIENCE ─────────── */}
+        {view === "setup" && setupStep === "start" && (
+          <div className="grid grid-cols-1 gap-8 lg:grid-cols-12 lg:grid-rows-[auto_1fr] lg:gap-x-12 lg:gap-y-8 lg:items-start xl:gap-x-16">
+            {/* Element 1 (Left Top): Editorial Introduction */}
+            <section
+              aria-label="Introduction"
+              className="space-y-3.5 lg:col-span-5 lg:col-start-1 lg:row-start-1"
             >
-              {phaseMeta.instruction}
-            </p>
-          </section>
+              <h1 className="text-3xl font-semibold tracking-tight text-foreground sm:text-5xl lg:text-[3.1rem] lg:leading-[1.06]">
+                Find your kind of {state.city}.
+              </h1>
+              <p className="max-w-md text-base text-cb-muted sm:text-lg leading-relaxed">
+                The music, shows and brands you love can be a starting point for
+                exploring somewhere new.
+              </p>
+            </section>
 
-          {/* City selector */}
-          <section
-            aria-labelledby={`${baseId}-city-heading`}
-            className="space-y-3"
-          >
-            <h2
-              id={`${baseId}-city-heading`}
-              className="text-base font-semibold"
-            >
-              Where are you headed?
-            </h2>
-
-            <div
-              role="group"
-              aria-labelledby={`${baseId}-city-heading`}
-              className="grid grid-cols-2 gap-3"
-            >
-              {TESTED_CITIES.map((cityOption) => {
-                const selected = state.city === cityOption;
-                const meta = CITY_META[cityOption];
-                return (
-                  <button
-                    key={cityOption}
-                    type="button"
-                    aria-pressed={selected}
-                    disabled={isGenerating}
-                    onClick={() => handleSelectCity(cityOption)}
-                    className={`flex flex-col items-start rounded-lg border p-4 text-left transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-cb-accent disabled:cursor-not-allowed disabled:opacity-50 ${
-                      selected
-                        ? "border-cb-accent bg-cb-accent-soft"
-                        : "border-cb-border hover:border-foreground/30 hover:bg-cb-surface"
-                    }`}
-                  >
-                    <div className="flex w-full items-center justify-between">
-                      <span className="text-sm font-semibold">
-                        {meta.name}
-                      </span>
-                      <span
-                        className={`h-2.5 w-2.5 rounded-full border-2 transition-colors ${
-                          selected
-                            ? "border-cb-accent bg-cb-accent"
-                            : "border-cb-border bg-transparent"
-                        }`}
-                        aria-hidden="true"
-                      />
-                    </div>
-                    <span className="mt-0.5 text-sm text-cb-muted">
-                      {meta.country}
-                    </span>
-                    <p className="mt-1.5 text-xs text-cb-muted leading-relaxed">
-                      {meta.note}
-                    </p>
-                  </button>
-                );
-              })}
-            </div>
-          </section>
-
-          {/* Profile selector */}
-          <section
-            aria-labelledby={`${baseId}-persona-heading`}
-            className="space-y-3"
-          >
-            <h2
-              id={`${baseId}-persona-heading`}
-              className="text-base font-semibold"
-            >
-              Start with a taste profile
-            </h2>
-
-            <div
-              role="group"
-              aria-labelledby={`${baseId}-persona-heading`}
-              className="grid grid-cols-1 gap-2.5 sm:grid-cols-2"
-            >
-              {PERSONA_PRESETS.map((preset) => {
-                const selected = state.selectedPresetId === preset.id;
-                return (
-                  <button
-                    key={preset.id}
-                    type="button"
-                    aria-pressed={selected}
-                    disabled={isGenerating}
-                    onClick={() => handleSelectPreset(preset.id)}
-                    className={`flex flex-col items-start rounded-lg border p-4 text-left transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-cb-accent disabled:cursor-not-allowed disabled:opacity-50 ${
-                      selected
-                        ? "border-cb-accent bg-cb-accent-soft"
-                        : "border-cb-border hover:border-foreground/30 hover:bg-cb-surface"
-                    }`}
-                  >
-                    <div className="flex w-full items-center justify-between">
-                      <span className="text-sm font-semibold">
-                        {preset.name}
-                      </span>
-                      <span className="text-xs text-cb-muted">
-                        {preset.anchors.length > 0
-                          ? `${preset.anchors.length} interests`
-                          : "Blank"}
-                      </span>
-                    </div>
-                    <p className="mt-1.5 text-xs text-cb-muted leading-relaxed">
-                      {preset.description}
-                    </p>
-                  </button>
-                );
-              })}
-            </div>
-          </section>
-
-          {/* Interests editor */}
-          <section
-            ref={anchorsSectionRef}
-            aria-labelledby={`${baseId}-anchors-heading`}
-            className="scroll-mt-20 space-y-3"
-          >
-            <div className="flex flex-wrap items-center justify-between gap-2">
-              <div>
-                <h2
-                  id={`${baseId}-anchors-heading`}
-                  className="text-base font-semibold"
-                >
-                  Your interests
-                </h2>
-                <p className="mt-0.5 text-sm text-cb-muted">
-                  We&rsquo;ll match each one to make sure we find the right
-                  thing.
-                </p>
-              </div>
-
-              <div className="flex items-center gap-2">
-                {unsearchedAnchors.length > 0 && (
-                  <button
-                    type="button"
-                    disabled={isGenerating}
-                    onClick={lookupAllUnsearched}
-                    className="rounded-lg bg-cb-accent px-3.5 py-2 text-sm font-medium text-cb-accent-fg transition-opacity hover:opacity-90 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-cb-accent disabled:cursor-not-allowed disabled:opacity-50"
-                  >
-                    Find matches for{" "}
-                    {unsearchedAnchors.length === 1
-                      ? "1 interest"
-                      : `all ${unsearchedAnchors.length}`}
-                  </button>
-                )}
-
-                {state.anchors.length < MAX_TRUSTED_ANCHORS &&
-                  !isAddRowOpen && (
-                    <button
-                      type="button"
-                      disabled={isGenerating}
-                      onClick={() => {
-                        setFormError(null);
-                        setIsAddRowOpen(true);
-                      }}
-                      className="rounded-lg border border-cb-border px-3.5 py-2 text-sm font-medium text-foreground transition-colors hover:bg-cb-surface focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-cb-accent disabled:cursor-not-allowed disabled:opacity-50"
-                    >
-                      Add another
-                    </button>
-                  )}
-              </div>
-            </div>
-
-            {formError && (
-              <div
-                role="alert"
-                className="rounded-lg border border-cb-error/30 bg-cb-error-soft px-4 py-3 text-sm text-cb-error"
+            {/* Element 2 (Right Column): Curated City & Taste Profile Choices */}
+            <div className="space-y-8 lg:col-span-7 lg:col-start-6 lg:row-start-1 lg:row-span-2">
+              {/* Decision 1: Destination City */}
+              <section
+                aria-labelledby={`${baseId}-city-heading`}
+                className="space-y-3"
               >
-                {formError}
-              </div>
-            )}
-
-            {/* Interest rows */}
-            <div className="divide-y divide-cb-border rounded-lg border border-cb-border">
-              {state.anchors.length === 0 && !isAddRowOpen && (
-                <div className="p-8 text-center">
-                  <p className="text-sm font-medium text-foreground">
-                    No interests yet
-                  </p>
-                  <p className="mt-1 text-sm text-cb-muted">
-                    Add an artist, TV show, movie, brand, or person to discover
-                    places in {state.city}.
-                  </p>
-                  <button
-                    type="button"
-                    disabled={isGenerating}
-                    onClick={() => setIsAddRowOpen(true)}
-                    className="mt-4 rounded-lg bg-cb-accent px-4 py-2 text-sm font-medium text-cb-accent-fg transition-opacity hover:opacity-90"
+                <div className="flex items-baseline justify-between gap-2">
+                  <h2
+                    id={`${baseId}-city-heading`}
+                    className="text-base font-semibold text-foreground"
                   >
-                    Add your first interest
-                  </button>
+                    Destination
+                  </h2>
                 </div>
-              )}
 
-              {state.anchors.map((anchor) => (
-                <AnchorRow
-                  key={anchor.id}
-                  anchor={anchor}
-                  disabled={isGenerating}
-                  onLookup={() =>
-                    lookupSingleAnchor(anchor.id, anchor.query, anchor.type)
-                  }
-                  onStartEdit={() =>
-                    setState((prev) => setAnchorEditing(prev, anchor.id, true))
-                  }
-                  onCancelEdit={() =>
-                    setState((prev) => setAnchorEditing(prev, anchor.id, false))
-                  }
-                  onSaveEdit={(query, type) =>
-                    handleUpdateAnchor(anchor.id, query, type)
-                  }
-                  onRemove={() => handleRemoveAnchor(anchor.id)}
-                  onConfirm={(entityId) =>
-                    handleConfirmCandidate(anchor.id, entityId)
-                  }
-                  onUnconfirm={() => handleUnconfirmAnchor(anchor.id)}
-                />
-              ))}
-
-              {/* Add interest form */}
-              {isAddRowOpen && state.anchors.length < MAX_TRUSTED_ANCHORS && (
-                <form
-                  onSubmit={handleAddAnchorSubmit}
-                  className="bg-cb-surface/50 p-4"
+                <div
+                  role="group"
+                  aria-labelledby={`${baseId}-city-heading`}
+                  className="grid grid-cols-1 gap-3 sm:grid-cols-2"
                 >
-                  <div className="mb-3 flex items-center justify-between">
-                    <span className="text-sm font-medium text-cb-muted">
-                      Add interest ({state.anchors.length + 1} of{" "}
-                      {MAX_TRUSTED_ANCHORS})
-                    </span>
-                    {state.anchors.length > 0 && (
+                  {TESTED_CITIES.map((cityOption) => {
+                    const selected = state.city === cityOption;
+                    const meta = CITY_META[cityOption];
+                    return (
                       <button
+                        key={cityOption}
                         type="button"
-                        onClick={() => {
-                          setIsAddRowOpen(false);
-                          setFormError(null);
-                        }}
-                        className="text-sm text-cb-muted hover:text-foreground"
+                        aria-pressed={selected}
+                        disabled={isGenerating}
+                        onClick={() => handleSelectCity(cityOption)}
+                        className={`group relative flex flex-col items-start rounded-2xl border p-5 text-left transition-all focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-cb-accent disabled:cursor-not-allowed disabled:opacity-50 ${
+                          selected
+                            ? "border-cb-accent bg-cb-card shadow-[0_6px_22px_rgba(35,34,30,0.06)] ring-1 ring-cb-accent/25"
+                            : "border-cb-border bg-cb-card/60 hover:border-cb-border-strong hover:bg-cb-card"
+                        }`}
                       >
-                        Cancel
+                        <div className="flex w-full items-center justify-between gap-2">
+                          <div className="flex items-baseline gap-2">
+                            <span className="text-lg font-semibold tracking-tight text-foreground">
+                              {meta.name}
+                            </span>
+                            <span className="text-xs font-medium text-cb-muted">
+                              {meta.country}
+                            </span>
+                          </div>
+                          <span
+                            className={`inline-flex h-5 w-5 items-center justify-center rounded-full border transition-colors ${
+                              selected
+                                ? "border-cb-accent bg-cb-accent text-cb-accent-fg"
+                                : "border-cb-border-strong bg-transparent"
+                            }`}
+                            aria-hidden="true"
+                          >
+                            {selected && (
+                              <span className="h-2 w-2 rounded-full bg-cb-accent-fg" />
+                            )}
+                          </span>
+                        </div>
+                        <p className="mt-2 text-xs text-cb-muted leading-relaxed">
+                          {meta.note}
+                        </p>
                       </button>
-                    )}
-                  </div>
+                    );
+                  })}
+                </div>
+              </section>
 
-                  <div className="flex flex-col gap-2.5 sm:flex-row">
-                    <div className="flex-1">
-                      <label
-                        htmlFor={`${baseId}-new-anchor-query`}
-                        className="sr-only"
-                      >
-                        Name
-                      </label>
-                      <input
-                        id={`${baseId}-new-anchor-query`}
-                        type="text"
-                        value={newQuery}
-                        onChange={(e) => setNewQuery(e.target.value)}
-                        placeholder={ANCHOR_TYPE_META[newType].placeholder}
-                        maxLength={200}
+              {/* Decision 2: Starting Taste Profile (Editorial Ledger List) */}
+              <section
+                aria-labelledby={`${baseId}-persona-heading`}
+                className="space-y-3"
+              >
+                <div className="flex items-baseline justify-between gap-2">
+                  <h2
+                    id={`${baseId}-persona-heading`}
+                    className="text-base font-semibold text-foreground"
+                  >
+                    Starting taste profile
+                  </h2>
+                </div>
+
+                <div
+                  role="group"
+                  aria-labelledby={`${baseId}-persona-heading`}
+                  className="overflow-hidden rounded-2xl border border-cb-border bg-cb-card shadow-[0_2px_16px_rgba(35,34,30,0.035)] divide-y divide-cb-border"
+                >
+                  {PERSONA_PRESETS.map((preset) => {
+                    const selected = state.selectedPresetId === preset.id;
+                    return (
+                      <button
+                        key={preset.id}
+                        type="button"
+                        aria-pressed={selected}
                         disabled={isGenerating}
-                        className="w-full rounded-lg border border-cb-border bg-background px-3.5 py-2.5 text-sm text-foreground placeholder:text-cb-muted focus:border-cb-accent focus:outline-none focus:ring-1 focus:ring-cb-accent"
-                      />
-                    </div>
-
-                    <div className="sm:w-36">
-                      <label
-                        htmlFor={`${baseId}-new-anchor-type`}
-                        className="sr-only"
+                        onClick={() => handleSelectPreset(preset.id)}
+                        className={`flex w-full items-start gap-3.5 p-4 text-left transition-colors focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-cb-accent disabled:cursor-not-allowed disabled:opacity-50 sm:px-5 sm:py-4.5 ${
+                          selected
+                            ? "bg-cb-accent-soft/50"
+                            : "bg-cb-card hover:bg-cb-surface/40"
+                        }`}
                       >
-                        Type
-                      </label>
-                      <select
-                        id={`${baseId}-new-anchor-type`}
-                        value={newType}
-                        onChange={(e) =>
-                          setNewType(e.target.value as SupportedAnchorType)
-                        }
-                        disabled={isGenerating}
-                        className="w-full rounded-lg border border-cb-border bg-background px-3 py-2.5 text-sm text-foreground focus:border-cb-accent focus:outline-none focus:ring-1 focus:ring-cb-accent"
-                      >
-                        {SUPPORTED_ANCHOR_TYPES.map((typeOption) => (
-                          <option key={typeOption} value={typeOption}>
-                            {ANCHOR_TYPE_META[typeOption].label}
-                          </option>
-                        ))}
-                      </select>
-                    </div>
+                        <span
+                          className={`mt-1 inline-flex h-4.5 w-4.5 shrink-0 items-center justify-center rounded-full border transition-colors ${
+                            selected
+                              ? "border-cb-accent bg-cb-accent text-cb-accent-fg"
+                              : "border-cb-border-strong bg-background"
+                          }`}
+                          aria-hidden="true"
+                        >
+                          {selected && (
+                            <span className="h-1.5 w-1.5 rounded-full bg-cb-accent-fg" />
+                          )}
+                        </span>
 
-                    <button
-                      type="submit"
-                      disabled={isGenerating || newQuery.trim().length === 0}
-                      className="rounded-lg bg-cb-accent px-4 py-2.5 text-sm font-medium text-cb-accent-fg transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
-                    >
-                      Find matches
-                    </button>
-                  </div>
-                </form>
-              )}
+                        <div className="min-w-0 flex-1">
+                          <div className="flex flex-wrap items-center justify-between gap-2">
+                            <span className="text-sm font-semibold text-foreground sm:text-base">
+                              {preset.name}
+                            </span>
+                            <span
+                              className={`rounded-full px-2.5 py-0.5 text-xs font-medium ${
+                                selected
+                                  ? "bg-cb-accent/12 text-cb-accent"
+                                  : "bg-cb-surface text-cb-muted"
+                              }`}
+                            >
+                              {preset.anchors.length > 0
+                                ? `${preset.anchors.length} interests`
+                                : "Blank slate"}
+                            </span>
+                          </div>
+
+                          <p className="mt-1 text-xs text-cb-muted leading-relaxed sm:text-sm">
+                            {preset.description}
+                          </p>
+
+                          {preset.anchors.length > 0 && (
+                            <p className="mt-2 text-xs font-medium text-foreground/75">
+                              {preset.anchors.map((s) => s.query).join(" · ")}
+                            </p>
+                          )}
+                        </div>
+                      </button>
+                    );
+                  })}
+                </div>
+              </section>
             </div>
-          </section>
 
-          {/* Generate action */}
-          <section
-            aria-label="Build city guide"
-            className="rounded-lg border border-cb-border bg-cb-surface/50 p-5"
-          >
-            <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-              <div className="space-y-1">
-                <p className="text-sm font-medium">
-                  {state.city} guide with {confirmedCount} of{" "}
-                  {state.anchors.length} interests confirmed
-                </p>
-                <p className="text-sm text-cb-muted">
-                  {isGenerating
-                    ? `Finding places in ${state.city} that match your taste…`
-                    : isReady
-                      ? "Ready to build your guide."
-                      : state.anchors.length === 0
-                        ? "Add and confirm at least one interest to get started."
-                        : "Find matches and confirm every interest first, or remove ones you don't need."}
-                </p>
+            {/* Element 3 (Left Bottom on Desktop, Bottom on Mobile): Selected Profile Preview & Continue Action */}
+            <aside
+              aria-label="Selected starting point"
+              className="rounded-2xl border border-cb-border bg-cb-card p-5 shadow-[0_4px_20px_rgba(35,34,30,0.04)] sm:p-6 lg:col-span-5 lg:col-start-1 lg:row-start-2 lg:self-start"
+            >
+              <div className="flex items-baseline justify-between gap-2 border-b border-cb-border pb-3.5">
+                <div>
+                  <p className="text-xs font-medium text-cb-muted">
+                    Selected starting point
+                  </p>
+                  <h3 className="mt-0.5 text-base font-semibold text-foreground">
+                    {activeCityMeta.name}
+                    {activeCityMeta.country
+                      ? `, ${activeCityMeta.country}`
+                      : ""}{" "}
+                    · {activePreset.name}
+                  </h3>
+                </div>
+                {confirmedCount > 0 && (
+                  <span className="shrink-0 text-xs font-medium text-cb-confirmed">
+                    {confirmedCount} of {state.anchors.length} confirmed
+                  </span>
+                )}
+              </div>
+
+              {/* Compact preview of the selected profile's interests */}
+              <div className="py-4">
+                {state.anchors.length > 0 ? (
+                  <div className="space-y-3">
+                    <ul className="divide-y divide-cb-border/70">
+                      {state.anchors.map((item) => {
+                        const isItemConfirmed =
+                          item.status === "confirmed" &&
+                          item.confirmedEntity !== null;
+                        return (
+                          <li
+                            key={item.id}
+                            className="flex items-center justify-between gap-2 py-2 text-xs first:pt-0 last:pb-0 sm:text-sm"
+                          >
+                            <div className="flex min-w-0 items-center gap-2.5">
+                              {isItemConfirmed ? (
+                                <span
+                                  className="text-cb-confirmed"
+                                  title="Confirmed"
+                                  aria-hidden="true"
+                                >
+                                  ✓
+                                </span>
+                              ) : (
+                                <span
+                                  className="h-1.5 w-1.5 shrink-0 rounded-full bg-cb-accent/75"
+                                  aria-hidden="true"
+                                />
+                              )}
+                              <span className="truncate font-medium text-foreground">
+                                {isItemConfirmed
+                                  ? item.confirmedEntity!.name
+                                  : item.query}
+                              </span>
+                            </div>
+                            <span className="shrink-0 text-xs text-cb-muted">
+                              {formatAnchorType(item.type)}
+                            </span>
+                          </li>
+                        );
+                      })}
+                    </ul>
+
+                    <p className="border-t border-cb-border pt-3 text-xs text-cb-muted leading-relaxed">
+                      Review and confirm each match in the next step.
+                    </p>
+                  </div>
+                ) : (
+                  <p className="text-sm text-cb-muted leading-relaxed">
+                    Start with a blank slate and add up to five artists, shows,
+                    films, brands, or people in the next step.
+                  </p>
+                )}
               </div>
 
               <button
                 type="button"
-                onClick={handleGenerateKit}
-                disabled={!isReady || isGenerating}
-                className="inline-flex shrink-0 items-center justify-center gap-2.5 rounded-lg bg-cb-accent px-6 py-3 text-sm font-semibold text-cb-accent-fg transition-opacity hover:opacity-90 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-cb-accent disabled:cursor-not-allowed disabled:opacity-40"
+                disabled={isGenerating}
+                onClick={handleContinueToInterests}
+                className="inline-flex w-full items-center justify-center rounded-full bg-cb-accent px-6 py-3.5 text-sm font-semibold text-cb-accent-fg shadow-xs transition-colors hover:bg-cb-accent-hover focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-cb-accent disabled:cursor-not-allowed disabled:opacity-40"
               >
-                {isGenerating && (
-                  <span
-                    className="h-4 w-4 animate-spin rounded-full border-2 border-cb-accent-fg/30 border-t-cb-accent-fg"
-                    aria-hidden="true"
-                  />
-                )}
-                {isGenerating
-                  ? "Building your guide…"
-                  : `Build my ${state.city} guide`}
+                {state.anchors.length > 0
+                  ? "Continue to your interests"
+                  : "Add your interests"}
               </button>
-            </div>
-          </section>
+            </aside>
+          </div>
+        )}
 
-          {/* Error state */}
-          {state.generation.status === "error" && (
+        {/* ── STAGE 2: CONFIRM YOUR INTERESTS ─────────────────── */}
+        {view === "setup" && setupStep === "interests" && (
+          <div className="grid grid-cols-1 gap-8 lg:grid-cols-12 lg:grid-rows-[auto_1fr] lg:gap-x-12 lg:gap-y-6 lg:items-start xl:gap-x-16">
+            {/* Element 1 (Left Top): Stage 2 Context & Back Control */}
             <section
-              role="alert"
-              aria-label="Generation error"
-              className="space-y-4 rounded-lg border border-cb-error/30 bg-cb-error-soft p-5"
+              aria-label="Confirm your interests"
+              className="space-y-4 lg:col-span-5 lg:col-start-1 lg:row-start-1"
             >
-              <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-                <div>
-                  <h3 className="text-sm font-semibold text-cb-error">
-                    Couldn&rsquo;t build your guide
-                  </h3>
-                  <p className="mt-1 text-sm text-foreground/80">
-                    {state.generation.errorMessage ??
-                      "An unexpected error occurred."}
+              <button
+                type="button"
+                disabled={isGenerating}
+                onClick={handleBackToStart}
+                className="inline-flex items-center gap-1.5 rounded-full border border-cb-border bg-cb-card px-3.5 py-1.5 text-xs font-medium text-foreground transition-colors hover:border-cb-border-strong hover:bg-cb-surface focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-cb-accent disabled:opacity-40"
+              >
+                <span aria-hidden="true">←</span>
+                <span>Back to city &amp; profile</span>
+              </button>
+
+              <div className="space-y-2.5">
+                <h1 className="text-3xl font-semibold tracking-tight text-foreground sm:text-4xl lg:leading-[1.1]">
+                  Confirm your interests for {state.city}.
+                </h1>
+                <p className="text-sm text-cb-muted leading-relaxed sm:text-base">
+                  Match each pick so your guide reflects the exact artist, show,
+                  film, or brand you have in mind.
+                </p>
+              </div>
+            </section>
+
+            {/* Element 2 (Right Column): Interests Collection & Candidate Confirmation */}
+            <section
+              ref={anchorsSectionRef}
+              aria-labelledby={`${baseId}-anchors-heading`}
+              className="scroll-mt-8 space-y-4 lg:col-span-7 lg:col-start-6 lg:row-start-1 lg:row-span-2"
+            >
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div className="flex items-baseline gap-2.5">
+                  <h2
+                    id={`${baseId}-anchors-heading`}
+                    className="text-base font-semibold text-foreground"
+                  >
+                    Your interests
+                  </h2>
+                  <span className="text-xs text-cb-muted">
+                    {state.anchors.length} of {MAX_TRUSTED_ANCHORS}
+                  </span>
+                </div>
+
+                <div className="flex flex-wrap items-center gap-2">
+                  {unsearchedAnchors.length > 0 && (
+                    <button
+                      type="button"
+                      disabled={isGenerating}
+                      onClick={lookupAllUnsearched}
+                      className="rounded-full bg-cb-accent px-4 py-2 text-xs font-semibold text-cb-accent-fg shadow-xs transition-colors hover:bg-cb-accent-hover focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-cb-accent disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      Find matches for{" "}
+                      {unsearchedAnchors.length === 1
+                        ? "1 interest"
+                        : `all ${unsearchedAnchors.length}`}
+                    </button>
+                  )}
+
+                  {state.anchors.length < MAX_TRUSTED_ANCHORS &&
+                    !isAddRowOpen && (
+                      <button
+                        type="button"
+                        disabled={isGenerating}
+                        onClick={() => {
+                          setFormError(null);
+                          setIsAddRowOpen(true);
+                        }}
+                        className="rounded-full border border-cb-border bg-cb-card px-4 py-2 text-xs font-medium text-foreground transition-colors hover:border-cb-border-strong hover:bg-cb-surface focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-cb-accent disabled:cursor-not-allowed disabled:opacity-50"
+                      >
+                        + Add interest
+                      </button>
+                    )}
+                </div>
+              </div>
+
+              {formError && (
+                <div
+                  role="alert"
+                  className="rounded-xl border border-cb-error/30 bg-cb-error-soft px-4 py-3 text-sm text-cb-error"
+                >
+                  {formError}
+                </div>
+              )}
+
+              {/* Interest collection list */}
+              <div className="overflow-hidden rounded-2xl border border-cb-border bg-cb-card shadow-[0_2px_16px_rgba(35,34,30,0.035)] divide-y divide-cb-border">
+                {state.anchors.length === 0 && !isAddRowOpen && (
+                  <div className="p-8 text-center">
+                    <p className="text-base font-semibold text-foreground">
+                      Your interest list is empty
+                    </p>
+                    <p className="mx-auto mt-1 max-w-md text-sm text-cb-muted">
+                      Add an artist, television show, film, brand, or public
+                      figure to start shaping your {state.city} guide.
+                    </p>
+                    <button
+                      type="button"
+                      disabled={isGenerating}
+                      onClick={() => setIsAddRowOpen(true)}
+                      className="mt-4 rounded-full bg-cb-accent px-5 py-2.5 text-sm font-semibold text-cb-accent-fg transition-colors hover:bg-cb-accent-hover"
+                    >
+                      Add your first interest
+                    </button>
+                  </div>
+                )}
+
+                {state.anchors.map((anchor) => (
+                  <AnchorRow
+                    key={anchor.id}
+                    anchor={anchor}
+                    disabled={isGenerating}
+                    onLookup={() =>
+                      lookupSingleAnchor(anchor.id, anchor.query, anchor.type)
+                    }
+                    onStartEdit={() =>
+                      setState((prev) =>
+                        setAnchorEditing(prev, anchor.id, true),
+                      )
+                    }
+                    onCancelEdit={() =>
+                      setState((prev) =>
+                        setAnchorEditing(prev, anchor.id, false),
+                      )
+                    }
+                    onSaveEdit={(query, type) =>
+                      handleUpdateAnchor(anchor.id, query, type)
+                    }
+                    onRemove={() => handleRemoveAnchor(anchor.id)}
+                    onConfirm={(entityId) =>
+                      handleConfirmCandidate(anchor.id, entityId)
+                    }
+                    onUnconfirm={() => handleUnconfirmAnchor(anchor.id)}
+                  />
+                ))}
+
+                {/* Add interest composer */}
+                {isAddRowOpen && state.anchors.length < MAX_TRUSTED_ANCHORS && (
+                  <form
+                    onSubmit={handleAddAnchorSubmit}
+                    className="bg-background/60 p-4 sm:p-5"
+                  >
+                    <div className="mb-3 flex items-center justify-between">
+                      <span className="text-xs font-semibold text-foreground">
+                        Add to your interests ({state.anchors.length + 1} of{" "}
+                        {MAX_TRUSTED_ANCHORS})
+                      </span>
+                      {state.anchors.length > 0 && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setIsAddRowOpen(false);
+                            setFormError(null);
+                          }}
+                          className="text-xs font-medium text-cb-muted hover:text-foreground"
+                        >
+                          Cancel
+                        </button>
+                      )}
+                    </div>
+
+                    <div className="flex flex-col gap-2.5 sm:flex-row">
+                      <div className="sm:w-36">
+                        <label
+                          htmlFor={`${baseId}-new-anchor-type`}
+                          className="sr-only"
+                        >
+                          Type
+                        </label>
+                        <select
+                          id={`${baseId}-new-anchor-type`}
+                          value={newType}
+                          onChange={(e) =>
+                            setNewType(e.target.value as SupportedAnchorType)
+                          }
+                          disabled={isGenerating}
+                          className="w-full rounded-xl border border-cb-border bg-cb-card px-3 py-2.5 text-sm text-foreground focus:border-cb-accent focus:outline-none focus:ring-1 focus:ring-cb-accent"
+                        >
+                          {SUPPORTED_ANCHOR_TYPES.map((typeOption) => (
+                            <option key={typeOption} value={typeOption}>
+                              {ANCHOR_TYPE_META[typeOption].label}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+
+                      <div className="flex-1">
+                        <label
+                          htmlFor={`${baseId}-new-anchor-query`}
+                          className="sr-only"
+                        >
+                          Name
+                        </label>
+                        <input
+                          id={`${baseId}-new-anchor-query`}
+                          type="text"
+                          value={newQuery}
+                          onChange={(e) => setNewQuery(e.target.value)}
+                          placeholder={ANCHOR_TYPE_META[newType].placeholder}
+                          maxLength={200}
+                          disabled={isGenerating}
+                          className="w-full rounded-xl border border-cb-border bg-cb-card px-3.5 py-2.5 text-sm text-foreground placeholder:text-cb-muted focus:border-cb-accent focus:outline-none focus:ring-1 focus:ring-cb-accent"
+                        />
+                      </div>
+
+                      <button
+                        type="submit"
+                        disabled={isGenerating || newQuery.trim().length === 0}
+                        className="rounded-xl bg-cb-accent px-4 py-2.5 text-sm font-semibold text-cb-accent-fg transition-colors hover:bg-cb-accent-hover disabled:cursor-not-allowed disabled:opacity-40"
+                      >
+                        Find matches
+                      </button>
+                    </div>
+                  </form>
+                )}
+              </div>
+            </section>
+
+            {/* Element 3 (Left Bottom on Desktop, Bottom on Mobile): Build Guide Action & Error State */}
+            <div className="space-y-4 lg:col-span-5 lg:col-start-1 lg:row-start-2 lg:self-start">
+              <section
+                aria-label="Build city guide"
+                className="rounded-2xl border border-cb-border bg-cb-card p-5 shadow-[0_4px_20px_rgba(35,34,30,0.04)] sm:p-6"
+              >
+                <div className="mb-3.5 flex items-center justify-between gap-2 border-b border-cb-border pb-3 text-xs text-cb-muted">
+                  <span className="font-medium text-foreground">
+                    {activeCityMeta.name}
+                    {activeCityMeta.country ? `, ${activeCityMeta.country}` : ""}
+                  </span>
+                  <span>{activePreset.name}</span>
+                </div>
+
+                <div className="space-y-1.5" role="status" aria-live="polite">
+                  <p className="text-sm font-semibold text-foreground sm:text-base">
+                    {isGenerating
+                      ? `Curating your ${state.city} guide…`
+                      : isReady
+                        ? `Ready to build your ${state.city} guide`
+                        : state.anchors.length === 0
+                          ? "Add at least one interest to get started"
+                          : `${confirmedCount} of ${state.anchors.length} ${
+                              state.anchors.length === 1
+                                ? "interest"
+                                : "interests"
+                            } confirmed`}
                   </p>
-                  <p className="mt-1 text-sm text-cb-muted">
-                    Your city ({state.city}) and {confirmedCount} confirmed{" "}
-                    {confirmedCount === 1 ? "interest" : "interests"} are saved.
+                  <p className="text-xs text-cb-muted leading-relaxed sm:text-sm">
+                    {isGenerating
+                      ? `Searching taste connections and screening venues in ${state.city}.`
+                      : isReady
+                        ? `Using ${state.anchors
+                            .map((a) => a.confirmedEntity?.name ?? a.query)
+                            .join(", ")}.`
+                        : phase === "waiting_for_confirmation"
+                          ? "Select the matching entry for each interest to continue."
+                          : unsearchedAnchors.length > 0
+                            ? `Find matches for ${
+                                pendingAnchors.length === 1
+                                  ? `"${pendingAnchors[0].query}"`
+                                  : `your remaining ${pendingAnchors.length} interests`
+                              }, then confirm each one.`
+                            : "Confirm or remove any unresolved interests to continue."}
                   </p>
                 </div>
-                <div className="flex shrink-0 items-center gap-2">
-                  <button
-                    type="button"
-                    onClick={focusAnchorsEditor}
-                    className="rounded-lg border border-cb-border bg-background px-4 py-2 text-sm font-medium text-foreground hover:bg-cb-surface"
-                  >
-                    Edit interests
-                  </button>
+
+                <div className="mt-5 space-y-2.5">
                   <button
                     type="button"
                     onClick={handleGenerateKit}
                     disabled={!isReady || isGenerating}
-                    className="rounded-lg bg-cb-accent px-4 py-2 text-sm font-medium text-cb-accent-fg hover:opacity-90 disabled:opacity-40"
+                    className="inline-flex w-full items-center justify-center gap-2.5 rounded-full bg-cb-accent px-6 py-3.5 text-sm font-semibold text-cb-accent-fg shadow-xs transition-all hover:bg-cb-accent-hover focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-cb-accent disabled:cursor-not-allowed disabled:opacity-40"
                   >
-                    Try again
+                    {isGenerating && (
+                      <span
+                        className="h-4 w-4 animate-spin rounded-full border-2 border-cb-accent-fg/30 border-t-cb-accent-fg"
+                        aria-hidden="true"
+                      />
+                    )}
+                    {isGenerating
+                      ? "Building your guide…"
+                      : `Build my ${state.city} guide`}
                   </button>
                 </div>
-              </div>
+              </section>
 
-              {state.generation.errorProcess && (
-                <AgentTraceDrawer
-                  process={state.generation.errorProcess}
-                  isOpen={isErrorTraceOpen}
-                  onToggle={() => setIsErrorTraceOpen((prev) => !prev)}
-                />
+              {/* Error state */}
+              {state.generation.status === "error" && (
+                <section
+                  role="alert"
+                  aria-label="Generation error"
+                  className="space-y-4 rounded-2xl border border-cb-error/30 bg-cb-error-soft p-5"
+                >
+                  <div className="space-y-3">
+                    <div>
+                      <h3 className="text-sm font-semibold text-cb-error">
+                        Couldn&rsquo;t build your guide right now
+                      </h3>
+                      <p className="mt-1 text-sm text-foreground/85">
+                        {state.generation.errorMessage ??
+                          "An unexpected error occurred."}
+                      </p>
+                      <p className="mt-1 text-xs text-cb-muted">
+                        Your destination ({state.city}) and {confirmedCount}{" "}
+                        confirmed{" "}
+                        {confirmedCount === 1 ? "interest" : "interests"} are
+                        still saved.
+                      </p>
+                    </div>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={focusAnchorsEditor}
+                        className="rounded-full border border-cb-border bg-cb-card px-4 py-2 text-xs font-medium text-foreground hover:bg-cb-surface"
+                      >
+                        Review interests
+                      </button>
+                      <button
+                        type="button"
+                        onClick={handleGenerateKit}
+                        disabled={!isReady || isGenerating}
+                        className="rounded-full bg-cb-accent px-4 py-2 text-xs font-semibold text-cb-accent-fg hover:bg-cb-accent-hover disabled:opacity-40"
+                      >
+                        Try again
+                      </button>
+                    </div>
+                  </div>
+
+                  {state.generation.errorProcess && (
+                    <AgentTraceDrawer
+                      process={state.generation.errorProcess}
+                      isOpen={isErrorTraceOpen}
+                      onToggle={() => setIsErrorTraceOpen((prev) => !prev)}
+                    />
+                  )}
+                </section>
               )}
-            </section>
-          )}
-        </div>
-        )} {/* end setup view */}
+            </div>
+          </div>
+        )}
 
-        {/* Results view — shown after successful generation */}
+        {/* Results view — shown after generation */}
         {view === "results" && state.generation.result && (
-          <section
-            aria-label="Your city guide"
-            className="scroll-mt-4"
-          >
+          <section aria-label="Your city guide" className="scroll-mt-4">
             <StarterKitResultsView
               key={`${state.generation.result.city}-${state.generation.result.status}-${state.generation.result.mode}-${state.generation.result.recommendations.map((r) => r.entityId).join(",")}`}
               completion={state.generation.result}
@@ -831,24 +1052,6 @@ export function StarterKitFlow() {
 }
 
 // ── Sub-components ───────────────────────────────────────────
-
-function StatusDot({ status }: { status: AnchorItem["status"] }) {
-  const cls = {
-    unsearched: "bg-cb-border",
-    searching: "bg-foreground animate-pulse",
-    candidates: "bg-cb-warning",
-    confirmed: "bg-cb-confirmed",
-    no_matches: "bg-cb-warning",
-    lookup_error: "bg-cb-error",
-  }[status];
-
-  return (
-    <span
-      className={`inline-block h-2 w-2 shrink-0 rounded-full ${cls}`}
-      aria-hidden="true"
-    />
-  );
-}
 
 interface AnchorRowProps {
   anchor: AnchorItem;
@@ -890,36 +1093,24 @@ function AnchorRow({
 
   if (anchor.isEditing) {
     return (
-      <form onSubmit={handleEditSubmit} className="space-y-3 p-4">
+      <form
+        onSubmit={handleEditSubmit}
+        className="space-y-3 bg-background/60 p-4 sm:p-5"
+      >
         <div className="flex items-center justify-between">
-          <span className="text-sm font-medium text-cb-muted">
+          <span className="text-xs font-semibold text-foreground">
             Edit interest
           </span>
           <button
             type="button"
             onClick={onCancelEdit}
-            className="text-sm text-cb-muted hover:text-foreground"
+            className="text-xs font-medium text-cb-muted hover:text-foreground"
           >
             Cancel
           </button>
         </div>
 
         <div className="flex flex-col gap-2.5 sm:flex-row">
-          <div className="flex-1">
-            <label htmlFor={`${rowId}-query`} className="sr-only">
-              Name
-            </label>
-            <input
-              id={`${rowId}-query`}
-              type="text"
-              value={editQuery}
-              onChange={(e) => setEditQuery(e.target.value)}
-              maxLength={200}
-              disabled={disabled}
-              className="w-full rounded-lg border border-cb-border bg-background px-3.5 py-2 text-sm text-foreground focus:border-cb-accent focus:outline-none focus:ring-1 focus:ring-cb-accent"
-            />
-          </div>
-
           <div className="sm:w-36">
             <label htmlFor={`${rowId}-type`} className="sr-only">
               Type
@@ -931,7 +1122,7 @@ function AnchorRow({
                 setEditType(e.target.value as SupportedAnchorType)
               }
               disabled={disabled}
-              className="w-full rounded-lg border border-cb-border bg-background px-3 py-2 text-sm text-foreground focus:border-cb-accent focus:outline-none focus:ring-1 focus:ring-cb-accent"
+              className="w-full rounded-xl border border-cb-border bg-cb-card px-3 py-2 text-sm text-foreground focus:border-cb-accent focus:outline-none focus:ring-1 focus:ring-cb-accent"
             >
               {SUPPORTED_ANCHOR_TYPES.map((t) => (
                 <option key={t} value={t}>
@@ -941,39 +1132,133 @@ function AnchorRow({
             </select>
           </div>
 
+          <div className="flex-1">
+            <label htmlFor={`${rowId}-query`} className="sr-only">
+              Name
+            </label>
+            <input
+              id={`${rowId}-query`}
+              type="text"
+              value={editQuery}
+              onChange={(e) => setEditQuery(e.target.value)}
+              maxLength={200}
+              disabled={disabled}
+              className="w-full rounded-xl border border-cb-border bg-cb-card px-3.5 py-2 text-sm text-foreground focus:border-cb-accent focus:outline-none focus:ring-1 focus:ring-cb-accent"
+            />
+          </div>
+
           <button
             type="submit"
             disabled={disabled || editQuery.trim().length === 0}
-            className="rounded-lg bg-cb-accent px-4 py-2 text-sm font-medium text-cb-accent-fg hover:opacity-90 disabled:opacity-40"
+            className="rounded-xl bg-cb-accent px-4 py-2 text-sm font-semibold text-cb-accent-fg hover:bg-cb-accent-hover disabled:opacity-40"
           >
-            Save and search
+            Save &amp; find
           </button>
         </div>
       </form>
     );
   }
 
+  const isConfirmed =
+    anchor.status === "confirmed" && anchor.confirmedEntity !== null;
+  const displayTitle = isConfirmed
+    ? anchor.confirmedEntity!.name
+    : anchor.query;
+  const disambiguation =
+    isConfirmed &&
+    anchor.confirmedEntity!.disambiguation &&
+    anchor.confirmedEntity!.disambiguation.toLowerCase() !==
+      anchor.confirmedEntity!.name.toLowerCase()
+      ? anchor.confirmedEntity!.disambiguation
+      : null;
+
   return (
-    <div className="px-4 py-3.5">
-      {/* Main row */}
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <div className="flex items-center gap-2.5">
-          <StatusDot status={anchor.status} />
-          <span className="text-sm font-medium">{anchor.query}</span>
-          <span className="rounded-md bg-cb-surface px-2 py-0.5 text-xs text-cb-muted">
-            {formatAnchorType(anchor.type)}
-          </span>
+    <div className="p-4 sm:px-5 sm:py-4">
+      {/* Unified interest row */}
+      <div className="flex flex-wrap items-center justify-between gap-2.5">
+        <div className="flex min-w-0 items-center gap-3">
+          {/* Status indicator */}
+          {isConfirmed ? (
+            <span
+              className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-cb-confirmed-soft text-cb-confirmed"
+              title="Confirmed match"
+            >
+              <svg
+                className="h-3.5 w-3.5"
+                viewBox="0 0 16 16"
+                fill="currentColor"
+                aria-hidden="true"
+              >
+                <path d="M13.78 4.22a.75.75 0 010 1.06l-7.25 7.25a.75.75 0 01-1.06 0L2.22 9.28a.75.75 0 011.06-1.06L6 10.94l6.72-6.72a.75.75 0 011.06 0z" />
+              </svg>
+            </span>
+          ) : anchor.status === "searching" ? (
+            <span
+              className="inline-flex h-6 w-6 shrink-0 items-center justify-center"
+              aria-hidden="true"
+            >
+              <span className="h-4 w-4 animate-spin rounded-full border-2 border-cb-border border-t-cb-accent" />
+            </span>
+          ) : anchor.status === "candidates" ? (
+            <span
+              className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-cb-warning-soft text-xs font-bold text-cb-warning"
+              title="Select a match"
+              aria-hidden="true"
+            >
+              ?
+            </span>
+          ) : anchor.status === "no_matches" ||
+            anchor.status === "lookup_error" ? (
+            <span
+              className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-cb-error-soft text-xs font-bold text-cb-error"
+              aria-hidden="true"
+            >
+              !
+            </span>
+          ) : (
+            <span
+              className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full border border-cb-border-strong bg-background text-cb-muted"
+              title="Not yet matched"
+              aria-hidden="true"
+            >
+              <span className="h-1.5 w-1.5 rounded-full bg-cb-muted/60" />
+            </span>
+          )}
+
+          <div className="min-w-0">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="text-sm font-semibold text-foreground sm:text-base">
+                {displayTitle}
+              </span>
+              {disambiguation && (
+                <span className="text-xs text-cb-muted">
+                  ({disambiguation})
+                </span>
+              )}
+              <span className="rounded-full bg-cb-surface px-2.5 py-0.5 text-xs font-medium text-cb-muted">
+                {formatAnchorType(anchor.type)}
+              </span>
+            </div>
+            {isConfirmed &&
+              anchor.query.trim().toLowerCase() !==
+                anchor.confirmedEntity!.name.trim().toLowerCase() && (
+                <p className="mt-0.5 text-xs text-cb-muted">
+                  Matched from &ldquo;{anchor.query}&rdquo;
+                </p>
+              )}
+          </div>
         </div>
 
-        <div className="flex items-center gap-1.5 text-sm">
+        {/* Actions */}
+        <div className="ml-auto flex items-center gap-1 text-xs sm:gap-1.5 sm:text-sm">
           {anchor.status === "unsearched" && (
             <button
               type="button"
               disabled={disabled}
               onClick={onLookup}
-              className="rounded-lg border border-cb-border px-3 py-1.5 font-medium text-foreground transition-colors hover:bg-cb-surface disabled:opacity-40"
+              className="rounded-full border border-cb-border-strong bg-background px-3.5 py-1.5 text-xs font-semibold text-foreground transition-colors hover:border-cb-accent hover:text-cb-accent disabled:opacity-40"
             >
-              Find matches
+              Find match
             </button>
           )}
           {anchor.status === "confirmed" && (
@@ -981,7 +1266,7 @@ function AnchorRow({
               type="button"
               disabled={disabled}
               onClick={onUnconfirm}
-              className="rounded-lg px-2.5 py-1.5 text-cb-muted hover:bg-cb-surface hover:text-foreground disabled:opacity-40"
+              className="rounded-full px-2.5 py-1 text-xs font-medium text-cb-muted transition-colors hover:bg-cb-surface hover:text-foreground disabled:opacity-40"
             >
               Change
             </button>
@@ -990,7 +1275,7 @@ function AnchorRow({
             type="button"
             disabled={disabled || anchor.status === "searching"}
             onClick={openEdit}
-            className="rounded-lg px-2.5 py-1.5 text-cb-muted hover:bg-cb-surface hover:text-foreground disabled:opacity-40"
+            className="rounded-full px-2.5 py-1 text-xs font-medium text-cb-muted transition-colors hover:bg-cb-surface hover:text-foreground disabled:opacity-40"
           >
             Edit
           </button>
@@ -999,167 +1284,147 @@ function AnchorRow({
             disabled={disabled || anchor.status === "searching"}
             onClick={onRemove}
             aria-label={`Remove ${anchor.query}`}
-            className="rounded-lg px-2.5 py-1.5 text-cb-muted hover:bg-cb-error-soft hover:text-cb-error disabled:opacity-40"
+            className="rounded-full px-2.5 py-1 text-xs font-medium text-cb-muted transition-colors hover:bg-cb-error-soft hover:text-cb-error disabled:opacity-40"
           >
             Remove
           </button>
         </div>
       </div>
 
-      {/* Searching state */}
+      {/* Searching status */}
       {anchor.status === "searching" && (
-        <div
+        <p
           role="status"
           aria-live="polite"
-          className="mt-2.5 flex items-center gap-2 pl-[18px] text-sm text-cb-muted"
+          className="mt-2 pl-9 text-xs text-cb-muted"
         >
-          <span
-            className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-cb-border border-t-foreground"
-            aria-hidden="true"
-          />
-          Searching for &ldquo;{anchor.query}&rdquo;…
-        </div>
+          Looking up &ldquo;{anchor.query}&rdquo;…
+        </p>
       )}
 
-      {/* Confirmed entity */}
-      {anchor.status === "confirmed" && anchor.confirmedEntity && (
-        <div className="mt-2.5 ml-[18px] flex items-center gap-2 rounded-lg border border-cb-confirmed/20 bg-cb-confirmed-soft px-3.5 py-2.5 text-sm">
-          <svg
-            className="h-4 w-4 shrink-0 text-cb-confirmed"
-            viewBox="0 0 16 16"
-            fill="currentColor"
-            aria-hidden="true"
-          >
-            <path d="M8 16A8 8 0 108 0a8 8 0 000 16zm3.78-9.72a.75.75 0 00-1.06-1.06L7 8.94 5.28 7.22a.75.75 0 00-1.06 1.06l2.25 2.25a.75.75 0 001.06 0l4.25-4.25z" />
-          </svg>
-          <span className="font-medium">
-            {anchor.confirmedEntity.name}
-          </span>
-          {anchor.confirmedEntity.disambiguation &&
-            anchor.confirmedEntity.disambiguation.toLowerCase() !==
-              anchor.confirmedEntity.name.toLowerCase() && (
-            <span className="text-cb-muted">
-              ({anchor.confirmedEntity.disambiguation})
-            </span>
-          )}
-        </div>
-      )}
-
-      {/* Candidate matches */}
+      {/* Candidate selection panel */}
       {anchor.status === "candidates" && anchor.candidates.length > 0 && (
-        <div className="mt-3 ml-[18px] space-y-2">
-          <p className="text-sm font-medium text-cb-warning">
-            {anchor.candidates.length === 1
-              ? "We found a match — is this the right one?"
-              : `We found ${anchor.candidates.length} possible matches — which one did you mean?`}
-          </p>
+        <div className="mt-3.5 pl-0 sm:pl-9">
+          <div className="rounded-xl border border-cb-border bg-background/75 p-3.5">
+            <p className="mb-2.5 text-xs font-medium text-foreground">
+              {anchor.candidates.length === 1
+                ? "Confirm this match for your guide:"
+                : `Found ${anchor.candidates.length} possible matches — choose the one you mean:`}
+            </p>
 
-          <div
-            role="group"
-            aria-label={`Matches for ${anchor.query}`}
-            className="space-y-1.5"
-          >
-            {anchor.candidates.map((cand) => (
-              <div
-                key={cand.entityId}
-                className="flex flex-col justify-between gap-2 rounded-lg border border-cb-border bg-background p-3 sm:flex-row sm:items-center"
-              >
-                <div className="min-w-0">
-                  <div className="flex flex-wrap items-center gap-2 text-sm">
-                    <span className="font-semibold">{cand.name}</span>
-                    {cand.disambiguation &&
-                      cand.disambiguation.toLowerCase() !==
-                        cand.name.toLowerCase() && (
-                      <span className="text-cb-muted">
-                        {cand.disambiguation}
-                      </span>
-                    )}
+            <div
+              role="group"
+              aria-label={`Matches for ${anchor.query}`}
+              className="space-y-2"
+            >
+              {anchor.candidates.map((cand) => {
+                const candDisambig =
+                  cand.disambiguation &&
+                  cand.disambiguation.toLowerCase() !== cand.name.toLowerCase()
+                    ? cand.disambiguation
+                    : null;
+                return (
+                  <div
+                    key={cand.entityId}
+                    className="flex flex-col justify-between gap-2.5 rounded-xl border border-cb-border bg-cb-card px-3.5 py-2.5 sm:flex-row sm:items-center"
+                  >
+                    <div className="min-w-0">
+                      <div className="flex flex-wrap items-baseline gap-2 text-sm">
+                        <span className="font-semibold text-foreground">
+                          {cand.name}
+                        </span>
+                        {candDisambig && (
+                          <span className="rounded-md bg-cb-surface px-2 py-0.5 text-xs font-medium text-cb-muted">
+                            {candDisambig}
+                          </span>
+                        )}
+                      </div>
+                      <p className="mt-0.5 text-xs text-cb-muted">
+                        {cand.types.map(formatAnchorType).join(", ")}
+                      </p>
+                    </div>
+
+                    <button
+                      type="button"
+                      disabled={disabled}
+                      onClick={() => onConfirm(cand.entityId)}
+                      className="shrink-0 rounded-full bg-cb-accent px-4 py-1.5 text-xs font-semibold text-cb-accent-fg transition-colors hover:bg-cb-accent-hover focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-cb-accent disabled:opacity-40"
+                    >
+                      Confirm match
+                    </button>
                   </div>
-                  <p className="mt-0.5 text-xs text-cb-muted">
-                    {cand.types.map(formatAnchorType).join(", ")}
-                  </p>
-                </div>
-
-                <button
-                  type="button"
-                  disabled={disabled}
-                  onClick={() => onConfirm(cand.entityId)}
-                  className="shrink-0 rounded-lg bg-cb-accent px-4 py-2 text-sm font-medium text-cb-accent-fg transition-opacity hover:opacity-90 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-cb-accent disabled:opacity-40"
-                >
-                  That&rsquo;s the one
-                </button>
-              </div>
-            ))}
+                );
+              })}
+            </div>
           </div>
         </div>
       )}
 
       {/* No matches */}
       {anchor.status === "no_matches" && (
-        <div
-          role="status"
-          className="mt-2.5 ml-[18px] flex flex-col justify-between gap-2 rounded-lg border border-cb-warning/30 bg-cb-warning-soft p-3 text-sm sm:flex-row sm:items-center"
-        >
-          <p className="text-foreground/80">
-            No matches found for &ldquo;{anchor.query}&rdquo; as{" "}
-            {formatAnchorType(anchor.type).toLowerCase()}. Try editing the name
-            or type.
-          </p>
-          <div className="flex shrink-0 items-center gap-2">
-            <button
-              type="button"
-              disabled={disabled}
-              onClick={openEdit}
-              className="rounded-lg border border-cb-border bg-background px-3 py-1.5 font-medium text-foreground hover:bg-cb-surface"
-            >
-              Edit
-            </button>
-            <button
-              type="button"
-              disabled={disabled}
-              onClick={onRemove}
-              className="rounded-lg border border-cb-error/30 px-3 py-1.5 font-medium text-cb-error hover:bg-cb-error-soft"
-            >
-              Remove
-            </button>
+        <div role="status" className="mt-3 pl-0 sm:pl-9">
+          <div className="flex flex-col justify-between gap-2 rounded-xl border border-cb-warning/30 bg-cb-warning-soft px-3.5 py-2.5 text-xs sm:flex-row sm:items-center">
+            <p className="text-foreground/85">
+              No matches found for &ldquo;{anchor.query}&rdquo; under{" "}
+              {formatAnchorType(anchor.type).toLowerCase()}. Try editing the
+              spelling or category.
+            </p>
+            <div className="flex shrink-0 items-center gap-2">
+              <button
+                type="button"
+                disabled={disabled}
+                onClick={openEdit}
+                className="rounded-full border border-cb-border bg-cb-card px-3 py-1 font-medium text-foreground hover:bg-cb-surface"
+              >
+                Edit
+              </button>
+              <button
+                type="button"
+                disabled={disabled}
+                onClick={onRemove}
+                className="rounded-full border border-cb-error/30 bg-cb-card px-3 py-1 font-medium text-cb-error hover:bg-cb-error-soft"
+              >
+                Remove
+              </button>
+            </div>
           </div>
         </div>
       )}
 
       {/* Lookup error */}
       {anchor.status === "lookup_error" && (
-        <div
-          role="alert"
-          className="mt-2.5 ml-[18px] flex flex-col justify-between gap-2 rounded-lg border border-cb-error/30 bg-cb-error-soft p-3 text-sm sm:flex-row sm:items-center"
-        >
-          <p className="text-foreground/80">
-            {anchor.errorMessage ?? "Search failed. You can retry or edit this interest."}
-          </p>
-          <div className="flex shrink-0 items-center gap-2">
-            <button
-              type="button"
-              disabled={disabled}
-              onClick={onLookup}
-              className="rounded-lg border border-cb-border bg-background px-3 py-1.5 font-medium text-foreground hover:bg-cb-surface"
-            >
-              Retry
-            </button>
-            <button
-              type="button"
-              disabled={disabled}
-              onClick={openEdit}
-              className="rounded-lg border border-cb-border bg-background px-3 py-1.5 font-medium text-foreground hover:bg-cb-surface"
-            >
-              Edit
-            </button>
-            <button
-              type="button"
-              disabled={disabled}
-              onClick={onRemove}
-              className="rounded-lg border border-cb-error/30 px-3 py-1.5 font-medium text-cb-error hover:bg-cb-error-soft"
-            >
-              Remove
-            </button>
+        <div role="alert" className="mt-3 pl-0 sm:pl-9">
+          <div className="flex flex-col justify-between gap-2 rounded-xl border border-cb-error/30 bg-cb-error-soft px-3.5 py-2.5 text-xs sm:flex-row sm:items-center">
+            <p className="text-foreground/85">
+              {anchor.errorMessage ??
+                "Search couldn't complete. Retry or edit this interest."}
+            </p>
+            <div className="flex shrink-0 items-center gap-2">
+              <button
+                type="button"
+                disabled={disabled}
+                onClick={onLookup}
+                className="rounded-full border border-cb-border bg-cb-card px-3 py-1 font-medium text-foreground hover:bg-cb-surface"
+              >
+                Retry
+              </button>
+              <button
+                type="button"
+                disabled={disabled}
+                onClick={openEdit}
+                className="rounded-full border border-cb-border bg-cb-card px-3 py-1 font-medium text-foreground hover:bg-cb-surface"
+              >
+                Edit
+              </button>
+              <button
+                type="button"
+                disabled={disabled}
+                onClick={onRemove}
+                className="rounded-full border border-cb-error/30 bg-cb-card px-3 py-1 font-medium text-cb-error hover:bg-cb-error-soft"
+              >
+                Remove
+              </button>
+            </div>
           </div>
         </div>
       )}
@@ -1204,9 +1469,18 @@ function StarterKitResultsView({
     return map;
   }, [markers]);
 
+  // Determine whether all recommendations share the exact same provenance label
+  const distinctLabels = useMemo(() => {
+    const set = new Set(completion.recommendations.map((r) => r.label));
+    return [...set];
+  }, [completion.recommendations]);
+  const sharedSingleLabel =
+    distinctLabels.length === 1 ? distinctLabels[0] : null;
+
   const [selectedEntityId, setSelectedEntityId] = useState<string | null>(null);
   const [activeCategoryFilter, setActiveCategoryFilter] =
     useState<string>("__all__");
+  const [mobilePane, setMobilePane] = useState<"list" | "map">("list");
   const [isTraceOpen, setIsTraceOpen] = useState<boolean>(
     () => completion.status !== "success" || completion.mode === "deterministic",
   );
@@ -1242,8 +1516,14 @@ function StarterKitResultsView({
     }
   }
 
+  function handleShowOnMapFromCard(entityId: string) {
+    setSelectedEntityId(entityId);
+    setMobilePane("map");
+  }
+
   function handleJumpToCard(entityId: string) {
     handleSelectFromMap(entityId);
+    setMobilePane("list");
     requestAnimationFrame(() => {
       const el = document.getElementById(`rec-card-${entityId}`);
       if (el) {
@@ -1256,115 +1536,129 @@ function StarterKitResultsView({
   const statusPresentation = getKitStatusPresentation(completion.status);
 
   return (
-    <div className="space-y-8">
-      {/* Results header */}
-      <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
-        <div className="space-y-1.5">
-          <div className="flex flex-wrap items-center gap-3">
-            <h2 className="text-2xl font-semibold tracking-tight sm:text-3xl">
-              Your {displayCity} guide
-            </h2>
-            <span
-              className={`rounded-md px-2.5 py-1 text-xs font-medium ${statusPresentation.badgeClassName}`}
-            >
-              {statusPresentation.badgeText}
-            </span>
+    <div className="space-y-6">
+      {/* Editorial Guide Header */}
+      <div className="border-b border-cb-border pb-5">
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+          <div className="space-y-1.5">
+            <div className="flex flex-wrap items-center gap-3">
+              <h1 className="text-3xl font-semibold tracking-tight text-foreground sm:text-4xl">
+                Your {displayCity} guide
+              </h1>
+              {completion.status !== "success" && (
+                <span
+                  className={`rounded-full px-3 py-0.5 text-xs font-medium ${statusPresentation.badgeClassName}`}
+                >
+                  {statusPresentation.badgeText}
+                </span>
+              )}
+            </div>
+
+            <p className="max-w-2xl text-sm text-cb-muted sm:text-base">
+              {completion.recommendations.length > 0 ? (
+                <>
+                  <strong className="font-semibold text-foreground">
+                    {completion.recommendations.length}{" "}
+                    {completion.recommendations.length === 1
+                      ? "place"
+                      : "places"}
+                  </strong>{" "}
+                  in {displayCity}
+                  {confirmedAnchorsSummary.length > 0 && (
+                    <>
+                      {" "}
+                      · Curated from{" "}
+                      <span className="text-foreground/90">
+                        {confirmedAnchorsSummary.join(", ")}
+                      </span>
+                    </>
+                  )}
+                </>
+              ) : (
+                completion.summary
+              )}
+            </p>
           </div>
-          <p className="text-sm text-cb-muted">
-            {completion.recommendations.length > 0 ? (
-              <>
-                {completion.recommendations.length}{" "}
-                {completion.recommendations.length === 1 ? "place" : "places"}{" "}
-                found in {displayCity}
-                {confirmedAnchorsSummary.length > 0 && (
-                  <> based on {confirmedAnchorsSummary.join(", ")}</>
-                )}
-              </>
-            ) : (
-              completion.summary
-            )}
-          </p>
+
+          {/* Provenance summary — explained once when all recommendations share the same label */}
+          {sharedSingleLabel && completion.recommendations.length > 0 && (
+            <div className="inline-flex self-start items-center gap-2 rounded-full border border-cb-border bg-cb-card px-3.5 py-1.5 text-xs text-cb-muted sm:self-auto">
+              <span
+                className="font-semibold text-cb-accent"
+                aria-hidden="true"
+              >
+                {LABEL_PRESENTATION[sharedSingleLabel].symbol}
+              </span>
+              <span className="font-medium text-foreground">
+                {LABEL_PRESENTATION[sharedSingleLabel].badgeText}
+              </span>
+              <span aria-hidden="true">·</span>
+              <span>{LABEL_PRESENTATION[sharedSingleLabel].shortTitle}</span>
+            </div>
+          )}
         </div>
 
-        <div className="flex shrink-0 items-center gap-2">
-          <button
-            type="button"
-            onClick={onEditAnchors}
-            disabled={isGenerating}
-            className="rounded-lg border border-cb-border px-3.5 py-2 text-sm font-medium text-foreground hover:bg-cb-surface focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-cb-accent disabled:opacity-40"
-          >
-            Edit interests
-          </button>
-          <button
-            type="button"
-            onClick={() => setIsTraceOpen((prev) => !prev)}
-            aria-expanded={isTraceOpen}
-            className="rounded-lg border border-cb-border px-3.5 py-2 text-sm font-medium text-foreground hover:bg-cb-surface focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-cb-accent"
-          >
-            {isTraceOpen ? "Hide details" : "How it works"}
-          </button>
-        </div>
+        {/* Mixed-label legend — only shown when results contain multiple provenance types */}
+        {!sharedSingleLabel && completion.recommendations.length > 0 && (
+          <div className="mt-4 flex flex-wrap gap-x-5 gap-y-2 text-xs text-cb-muted">
+            {(["connection", "useful-place", "exploratory"] as const).map(
+              (labelKey) => {
+                const info = LABEL_PRESENTATION[labelKey];
+                const count = completion.recommendations.filter(
+                  (r) => r.label === labelKey,
+                ).length;
+                if (count === 0) return null;
+                return (
+                  <span key={labelKey} className="flex items-center gap-1.5">
+                    <span
+                      className={`inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-xs font-medium ${info.badgeClassName}`}
+                    >
+                      <span aria-hidden="true">{info.symbol}</span>
+                      {info.badgeText}
+                    </span>
+                    <span>
+                      {info.shortTitle} ({count})
+                    </span>
+                  </span>
+                );
+              },
+            )}
+          </div>
+        )}
       </div>
 
-      {/* Fallback/partial notices */}
+      {/* Partial or fallback notice */}
       {(completion.status === "partial" ||
         completion.mode === "deterministic") && (
-        <div className="rounded-lg border border-cb-border bg-cb-surface/50 px-4 py-3 text-sm text-cb-muted">
+        <div className="rounded-2xl border border-cb-border bg-cb-card px-4 py-3 text-sm text-cb-muted">
           {completion.status === "partial" && (
             <p>
-              <strong className="text-foreground">Partial results:</strong>{" "}
+              <strong className="font-semibold text-foreground">
+                Partial results:
+              </strong>{" "}
               {completion.filteredInvalidCount > 0
                 ? `${completion.filteredInvalidCount} candidate${
                     completion.filteredInvalidCount === 1 ? " was" : "s were"
                   } excluded because ${
                     completion.filteredInvalidCount === 1 ? "it" : "they"
-                  } didn't pass quality checks.`
+                  } didn't pass venue quality checks.`
                 : "Only recommendations that passed every quality check are shown."}{" "}
               CultureBridge never pads results.
             </p>
           )}
           {completion.mode === "deterministic" && (
             <p>
-              <strong className="text-foreground">How these were found:</strong>{" "}
+              <strong className="font-semibold text-foreground">
+                Direct taste-graph search:
+              </strong>{" "}
               {completion.searchProcess.fallbackReason ??
-                "Results were generated directly from taste data without AI synthesis."}
+                "Results were generated directly from Qloo taste data without AI synthesis."}
             </p>
           )}
         </div>
       )}
 
-      {/* Evidence label key — compact inline */}
-      {completion.recommendations.length > 0 && (
-        <div className="flex flex-wrap gap-x-5 gap-y-2 text-xs text-cb-muted">
-          {(["connection", "useful-place", "exploratory"] as const).map(
-            (labelKey) => {
-              const info = LABEL_PRESENTATION[labelKey];
-              const count = completion.recommendations.filter(
-                (r) => r.label === labelKey,
-              ).length;
-              if (count === 0) return null;
-              const hasMultipleLabelTypes =
-                count < completion.recommendations.length;
-              return (
-                <span key={labelKey} className="flex items-center gap-1.5">
-                  <span
-                    className={`inline-flex items-center gap-1 rounded-md px-2 py-0.5 text-xs font-medium ${info.badgeClassName}`}
-                  >
-                    <span aria-hidden="true">{info.symbol}</span>
-                    {info.badgeText}
-                  </span>
-                  <span>
-                    {info.shortTitle}
-                    {hasMultipleLabelTypes ? ` (${count})` : ""}
-                  </span>
-                </span>
-              );
-            },
-          )}
-        </div>
-      )}
-
-      {/* Agent trace drawer */}
+      {/* Expandable "How these suggestions were found" bar & drawer */}
       <AgentTraceDrawer
         process={completion.searchProcess}
         isOpen={isTraceOpen}
@@ -1373,21 +1667,21 @@ function StarterKitResultsView({
 
       {/* Empty vs populated results */}
       {completion.recommendations.length === 0 ? (
-        <div className="rounded-lg border border-cb-border bg-cb-surface/50 p-8">
-          <h3 className="text-lg font-semibold">
-            No places matched your interests
-          </h3>
-          <p className="mt-2 max-w-lg text-sm text-cb-muted leading-relaxed">
-            CultureBridge never shows unverified or low-quality matches. You can
-            check the search details above to see what was tried, or adjust your
-            interests.
+        <div className="rounded-2xl border border-cb-border bg-cb-card p-8 text-center sm:p-12">
+          <h2 className="text-xl font-semibold text-foreground">
+            No places matched this combination
+          </h2>
+          <p className="mx-auto mt-2 max-w-lg text-sm text-cb-muted leading-relaxed">
+            CultureBridge only shows places that pass venue quality screening.
+            Check the search details above to see what was tried, or adjust your
+            interests to explore a different angle of {displayCity}.
           </p>
-          <div className="mt-5 flex flex-wrap gap-2.5">
+          <div className="mt-6 flex flex-wrap justify-center gap-3">
             <button
               type="button"
               onClick={onEditAnchors}
               disabled={isGenerating}
-              className="rounded-lg bg-cb-accent px-4 py-2.5 text-sm font-medium text-cb-accent-fg hover:opacity-90 disabled:opacity-40"
+              className="rounded-full bg-cb-accent px-5 py-2.5 text-sm font-semibold text-cb-accent-fg hover:bg-cb-accent-hover disabled:opacity-40"
             >
               Edit interests
             </button>
@@ -1395,41 +1689,64 @@ function StarterKitResultsView({
               type="button"
               disabled={isGenerating}
               onClick={onRegenerate}
-              className="rounded-lg border border-cb-border px-4 py-2.5 text-sm font-medium text-foreground hover:bg-cb-surface disabled:opacity-40"
+              className="rounded-full border border-cb-border bg-background px-5 py-2.5 text-sm font-medium text-foreground hover:bg-cb-surface disabled:opacity-40"
             >
               Try again
             </button>
           </div>
         </div>
       ) : (
-        <div className="grid grid-cols-1 gap-8 lg:grid-cols-12 lg:items-start">
-          {/* Map — above list on mobile, sticky right column on desktop */}
-          <div className="order-1 lg:order-2 lg:col-span-5 lg:sticky lg:top-16">
-            <ResultsMap
-              city={displayCity}
-              recommendations={completion.recommendations}
-              selectedEntityId={selection.selectedEntityId}
-              onSelectEntity={handleSelectFromMap}
-              onJumpToCard={handleJumpToCard}
-            />
-          </div>
+        <div className="space-y-5">
+          {/* Toolbar: Mobile List/Map toggle + Category filters */}
+          <div className="flex flex-col gap-3">
+            {/* Mobile List / Map Switcher (< lg) */}
+            <div className="flex items-center justify-between lg:hidden">
+              <div
+                role="group"
+                aria-label="Mobile view mode"
+                className="inline-flex rounded-full border border-cb-border bg-cb-surface p-1"
+              >
+                <button
+                  type="button"
+                  aria-pressed={mobilePane === "list"}
+                  onClick={() => setMobilePane("list")}
+                  className={`rounded-full px-4 py-1.5 text-xs font-semibold transition-colors ${
+                    mobilePane === "list"
+                      ? "bg-cb-card text-foreground shadow-2xs"
+                      : "text-cb-muted hover:text-foreground"
+                  }`}
+                >
+                  List ({visibleItems.length})
+                </button>
+                <button
+                  type="button"
+                  aria-pressed={mobilePane === "map"}
+                  onClick={() => setMobilePane("map")}
+                  className={`rounded-full px-4 py-1.5 text-xs font-semibold transition-colors ${
+                    mobilePane === "map"
+                      ? "bg-cb-card text-foreground shadow-2xs"
+                      : "text-cb-muted hover:text-foreground"
+                  }`}
+                >
+                  Map ({markers.length})
+                </button>
+              </div>
+            </div>
 
-          {/* Recommendation list */}
-          <div className="order-2 space-y-6 lg:order-1 lg:col-span-7">
-            {/* Category filter tabs */}
+            {/* Category filter pills — horizontal scroll on mobile, wrap on desktop */}
             {groups.length > 1 && (
               <nav
                 aria-label="Filter by category"
-                className="flex flex-wrap gap-1.5"
+                className="flex items-center gap-1.5 overflow-x-auto pb-1 lg:flex-wrap lg:overflow-visible lg:pb-0"
               >
                 <button
                   type="button"
                   aria-pressed={activeCategoryFilter === "__all__"}
                   onClick={() => setActiveCategoryFilter("__all__")}
-                  className={`rounded-lg px-3 py-1.5 text-sm font-medium transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-cb-accent ${
+                  className={`shrink-0 rounded-full border px-3.5 py-1.5 text-xs font-medium transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-cb-accent sm:text-sm ${
                     activeCategoryFilter === "__all__"
-                      ? "bg-cb-accent text-cb-accent-fg"
-                      : "bg-cb-surface text-foreground hover:bg-cb-border"
+                      ? "border-foreground bg-foreground text-background"
+                      : "border-cb-border bg-cb-card text-foreground hover:border-cb-border-strong hover:bg-cb-surface"
                   }`}
                 >
                   All ({completion.recommendations.length})
@@ -1442,34 +1759,55 @@ function StarterKitResultsView({
                       type="button"
                       aria-pressed={active}
                       onClick={() => setActiveCategoryFilter(group.key)}
-                      className={`rounded-lg px-3 py-1.5 text-sm font-medium transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-cb-accent ${
+                      className={`shrink-0 rounded-full border px-3.5 py-1.5 text-xs font-medium transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-cb-accent sm:text-sm ${
                         active
-                          ? "bg-cb-accent text-cb-accent-fg"
-                          : "bg-cb-surface text-foreground hover:bg-cb-border"
+                          ? "border-foreground bg-foreground text-background"
+                          : "border-cb-border bg-cb-card text-foreground hover:border-cb-border-strong hover:bg-cb-surface"
                       }`}
                     >
-                      {group.title} ({group.items.length})
+                      {group.title}{" "}
+                      <span className="opacity-70">({group.items.length})</span>
                     </button>
                   );
                 })}
               </nav>
             )}
+          </div>
 
-            {/* Unified flat recommendation list */}
-            <div className="divide-y divide-cb-border rounded-lg border border-cb-border">
+          {/* Integrated Split Layout: Recommendations List (Left 6 cols) + Sticky City Map (Right 6 cols) */}
+          <div className="grid grid-cols-1 gap-6 lg:grid-cols-12 lg:items-start lg:gap-8">
+            {/* Recommendation cards column */}
+            <div
+              className={`space-y-3.5 lg:col-span-6 ${
+                mobilePane === "map" ? "hidden lg:block" : "block"
+              }`}
+            >
               {visibleItems.map((rec) => (
                 <RecommendationCard
                   key={rec.entityId}
                   rec={rec}
-                  pinOrderIndex={
-                    markerOrderById.get(rec.entityId) ?? null
-                  }
-                  isSelected={
-                    selection.selectedEntityId === rec.entityId
-                  }
+                  pinOrderIndex={markerOrderById.get(rec.entityId) ?? null}
+                  showLabelBadge={!sharedSingleLabel}
+                  isSelected={selection.selectedEntityId === rec.entityId}
                   onSelect={() => setSelectedEntityId(rec.entityId)}
+                  onShowOnMap={() => handleShowOnMapFromCard(rec.entityId)}
                 />
               ))}
+            </div>
+
+            {/* Sticky map column */}
+            <div
+              className={`lg:col-span-6 lg:sticky lg:top-6 ${
+                mobilePane === "list" ? "hidden lg:block" : "block"
+              }`}
+            >
+              <ResultsMap
+                city={displayCity}
+                recommendations={completion.recommendations}
+                selectedEntityId={selection.selectedEntityId}
+                onSelectEntity={handleSelectFromMap}
+                onJumpToCard={handleJumpToCard}
+              />
             </div>
           </div>
         </div>
@@ -1483,15 +1821,19 @@ function StarterKitResultsView({
 interface RecommendationCardProps {
   rec: SafeRecommendationItem;
   pinOrderIndex: number | null;
+  showLabelBadge: boolean;
   isSelected: boolean;
   onSelect: () => void;
+  onShowOnMap: () => void;
 }
 
 function RecommendationCard({
   rec,
   pinOrderIndex,
+  showLabelBadge,
   isSelected,
   onSelect,
+  onShowOnMap,
 }: RecommendationCardProps) {
   const [isExpanded, setIsExpanded] = useState(false);
   const labelInfo = getLabelPresentation(rec.label);
@@ -1499,110 +1841,171 @@ function RecommendationCard({
   const provenance = useMemo(() => formatRecommendationProvenance(rec), [rec]);
   const practical = useMemo(() => buildPracticalDetailsView(rec), [rec]);
 
+  const primaryCategory = categoryInfo.qlooCategories[0] ?? null;
+  const secondaryCategories = categoryInfo.qlooCategories.slice(1);
+
   return (
     <article
       id={`rec-card-${rec.entityId}`}
       tabIndex={-1}
       aria-label={`${rec.name} — ${labelInfo.badgeText}`}
-      className={`px-4 py-4 transition-colors focus:outline-none ${
-        isSelected ? "bg-cb-accent-soft" : "hover:bg-cb-surface/50"
+      className={`group rounded-2xl border p-5 transition-all focus:outline-none ${
+        isSelected
+          ? "border-cb-accent bg-cb-card shadow-[0_6px_24px_rgba(224,86,56,0.08)] ring-1 ring-cb-accent/30"
+          : "border-cb-border bg-cb-card shadow-[0_2px_10px_rgba(35,34,30,0.025)] hover:border-cb-border-strong"
       }`}
     >
-      {/* Header row */}
-      <div className="flex items-start gap-3">
-        {/* Pin badge */}
+      <div className="flex items-start gap-3.5">
+        {/* Editorial Numbered Pin */}
         {practical.mappable && pinOrderIndex !== null ? (
           <button
             type="button"
-            onClick={onSelect}
+            onClick={onShowOnMap}
             title="Show on map"
-            className={`mt-0.5 inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-xs font-semibold transition-colors ${
+            aria-label={`Pin ${pinOrderIndex}: Show ${rec.name} on map`}
+            className={`mt-0.5 inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-xs font-bold transition-all ${
               isSelected
-                ? "bg-cb-accent text-cb-accent-fg"
-                : "border border-cb-border bg-background text-foreground hover:border-cb-accent hover:text-cb-accent"
+                ? "bg-cb-accent text-cb-accent-fg shadow-xs"
+                : "border border-cb-border-strong bg-cb-surface/70 text-foreground hover:border-cb-accent hover:bg-cb-accent hover:text-cb-accent-fg"
             }`}
           >
             {pinOrderIndex}
           </button>
         ) : (
-          <span className="mt-0.5 inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-dashed border-cb-border text-xs text-cb-muted">
+          <span
+            title="Location coordinates not available"
+            className="mt-0.5 inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-dashed border-cb-border text-xs text-cb-muted"
+          >
             —
           </span>
         )}
 
-        {/* Content */}
+        {/* Main Card Content */}
         <div className="min-w-0 flex-1">
-          <div className="flex flex-wrap items-center gap-2">
-            <h4 className="text-base font-semibold tracking-tight">
-              {rec.name}
-            </h4>
-            <span
-              className={`inline-flex items-center gap-1 rounded-md px-2 py-0.5 text-xs font-medium ${labelInfo.badgeClassName}`}
-            >
-              <span aria-hidden="true">{labelInfo.symbol}</span>
-              {labelInfo.badgeText}
-            </span>
-          </div>
+          {/* Category + Neighborhood metadata line */}
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className="flex flex-wrap items-center gap-1.5 text-xs font-medium text-cb-muted">
+              {primaryCategory && (
+                <span className="text-foreground/85">{primaryCategory}</span>
+              )}
+              {primaryCategory && practical.neighborhood && (
+                <span aria-hidden="true">·</span>
+              )}
+              {practical.neighborhood && <span>{practical.neighborhood}</span>}
+              {practical.priceTier && (
+                <>
+                  <span aria-hidden="true">·</span>
+                  <span>{practical.priceTier}</span>
+                </>
+              )}
+              {!primaryCategory && !practical.neighborhood && (
+                <span>Place in catalog</span>
+              )}
+            </div>
 
-          {/* Category + location */}
-          <p className="mt-0.5 text-sm text-cb-muted">
-            {[
-              categoryInfo.qlooCategories[0],
-              practical.locationLine,
-            ]
-              .filter(Boolean)
-              .join(" · ") || "Location not available"}
-          </p>
-
-          {/* Explanation */}
-          <p className="mt-2 text-sm leading-relaxed text-foreground/90">
-            {rec.explanationText}
-          </p>
-
-          {/* Action row */}
-          <div className="mt-2.5 flex items-center gap-3">
-            <button
-              type="button"
-              onClick={() => setIsExpanded(!isExpanded)}
-              className="text-sm font-medium text-cb-accent hover:underline"
-            >
-              {isExpanded ? "Less" : "Details"}
-            </button>
-            {practical.mappable && (
-              <button
-                type="button"
-                onClick={onSelect}
-                className={`text-sm font-medium ${
-                  isSelected
-                    ? "text-cb-accent"
-                    : "text-cb-muted hover:text-cb-accent"
-                }`}
+            {showLabelBadge && (
+              <span
+                className={`inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-xs font-medium ${labelInfo.badgeClassName}`}
               >
-                {isSelected ? "Shown on map" : "Show on map"}
-              </button>
+                <span aria-hidden="true">{labelInfo.symbol}</span>
+                {labelInfo.badgeText}
+              </span>
             )}
           </div>
 
-          {/* Expanded details */}
+          {/* Place Name */}
+          <h3 className="mt-1 text-lg font-semibold tracking-tight text-foreground">
+            <button
+              type="button"
+              onClick={onSelect}
+              className="text-left hover:text-cb-accent focus:outline-none"
+            >
+              {rec.name}
+            </button>
+          </h3>
+
+          {/* Address line */}
+          {practical.address && (
+            <p className="mt-0.5 text-xs text-cb-muted">{practical.address}</p>
+          )}
+
+          {/* Grounded Explanation */}
+          <p className="mt-2.5 text-sm leading-relaxed text-foreground/85">
+            {rec.explanationText}
+          </p>
+
+          {/* Card Footer Actions */}
+          <div className="mt-3.5 flex flex-wrap items-center justify-between gap-3 border-t border-cb-border/70 pt-3 text-xs">
+            <div className="flex items-center gap-4">
+              <button
+                type="button"
+                aria-expanded={isExpanded}
+                onClick={() => setIsExpanded(!isExpanded)}
+                className="inline-flex items-center gap-1 font-semibold text-foreground transition-colors hover:text-cb-accent"
+              >
+                <span>{isExpanded ? "Hide details" : "Details & why"}</span>
+                <svg
+                  className={`h-3.5 w-3.5 text-cb-muted transition-transform ${
+                    isExpanded ? "rotate-180" : ""
+                  }`}
+                  viewBox="0 0 16 16"
+                  fill="currentColor"
+                  aria-hidden="true"
+                >
+                  <path
+                    fillRule="evenodd"
+                    d="M4.22 6.22a.75.75 0 011.06 0L8 8.94l2.72-2.72a.75.75 0 111.06 1.06l-3.25 3.25a.75.75 0 01-1.06 0L4.22 7.28a.75.75 0 010-1.06z"
+                    clipRule="evenodd"
+                  />
+                </svg>
+              </button>
+
+              {practical.mappable && (
+                <button
+                  type="button"
+                  onClick={onShowOnMap}
+                  className={`font-medium transition-colors ${
+                    isSelected
+                      ? "text-cb-accent"
+                      : "text-cb-muted hover:text-foreground"
+                  }`}
+                >
+                  {isSelected ? "Highlighted on map" : "Locate on map"}
+                </button>
+              )}
+            </div>
+
+            {practical.websiteUrl && (
+              <a
+                href={practical.websiteUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex items-center gap-1 font-medium text-cb-muted transition-colors hover:text-foreground"
+              >
+                <span>Visit website</span>
+                <span aria-hidden="true">↗</span>
+              </a>
+            )}
+          </div>
+
+          {/* Expanded Details & Provenance Drawer */}
           {isExpanded && (
-            <div className="mt-4 space-y-4 border-t border-cb-border pt-4 text-sm">
+            <div className="mt-4 space-y-4 rounded-xl border border-cb-border bg-background/60 p-4 text-sm">
               {/* Practical details */}
               {practical.hasAnyPracticalDetail && (
-                <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                <dl className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                   {practical.locationLine && (
                     <div>
-                      <dt className="text-xs font-medium text-cb-muted">
-                        Location
-                      </dt>
-                      <dd className="mt-0.5">{practical.locationLine}</dd>
+                      <dt className="text-xs text-cb-muted">Location</dt>
+                      <dd className="mt-0.5 text-xs font-medium text-foreground">
+                        {practical.locationLine}
+                      </dd>
                     </div>
                   )}
                   {practical.websiteUrl && practical.websiteDisplay && (
                     <div>
-                      <dt className="text-xs font-medium text-cb-muted">
-                        Website
-                      </dt>
-                      <dd className="mt-0.5">
+                      <dt className="text-xs text-cb-muted">Website</dt>
+                      <dd className="mt-0.5 text-xs font-medium">
                         <a
                           href={practical.websiteUrl}
                           target="_blank"
@@ -1616,42 +2019,39 @@ function RecommendationCard({
                   )}
                   {practical.phone && (
                     <div>
-                      <dt className="text-xs font-medium text-cb-muted">
-                        Phone
-                      </dt>
-                      <dd className="mt-0.5">{practical.phone}</dd>
+                      <dt className="text-xs text-cb-muted">Phone</dt>
+                      <dd className="mt-0.5 text-xs font-medium text-foreground">
+                        {practical.phone}
+                      </dd>
                     </div>
                   )}
                   {practical.priceTier && (
                     <div>
-                      <dt className="text-xs font-medium text-cb-muted">
-                        Price
-                      </dt>
-                      <dd className="mt-0.5">{practical.priceTier}</dd>
+                      <dt className="text-xs text-cb-muted">Price tier</dt>
+                      <dd className="mt-0.5 text-xs font-medium text-foreground">
+                        {practical.priceTier}
+                      </dd>
                     </div>
                   )}
-                </div>
+                </dl>
               )}
 
-              {/* Categories */}
-              {categoryInfo.qlooCategories.length > 0 && (
-                <div>
-                  <span className="text-xs font-medium text-cb-muted">
-                    {categoryInfo.qlooCategoryLabel}:
-                  </span>{" "}
-                  <span className="text-sm">
-                    {categoryInfo.qlooCategories.join(", ")}
+              {/* Additional categories & tags */}
+              {secondaryCategories.length > 0 && (
+                <div className="text-xs">
+                  <span className="text-cb-muted">Additional categories: </span>
+                  <span className="font-medium text-foreground">
+                    {secondaryCategories.join(", ")}
                   </span>
                 </div>
               )}
 
-              {/* Tags */}
               {practical.supportingTags.length > 0 && (
                 <div className="flex flex-wrap gap-1.5">
                   {practical.supportingTags.map((tag) => (
                     <span
                       key={tag}
-                      className="rounded-md bg-cb-surface px-2 py-0.5 text-xs text-cb-muted"
+                      className="rounded-full bg-cb-surface px-2.5 py-0.5 text-xs text-cb-muted"
                     >
                       {tag}
                     </span>
@@ -1659,19 +2059,24 @@ function RecommendationCard({
                 </div>
               )}
 
-              {/* Provenance — why this was suggested */}
-              <div className="rounded-lg border border-cb-border bg-cb-surface/50 p-3">
-                <p className="text-xs font-medium text-cb-muted">
-                  Why this was suggested
-                </p>
-                <p className="mt-1 text-sm font-medium">
+              {/* Grounded provenance */}
+              <div className="border-t border-cb-border pt-3">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <span className="text-xs font-semibold text-foreground">
+                    How this place connected
+                  </span>
+                  <span className="rounded-full bg-cb-surface px-2.5 py-0.5 text-[11px] font-medium text-cb-muted">
+                    {labelInfo.symbol} {labelInfo.badgeText}
+                  </span>
+                </div>
+                <p className="mt-1 text-xs font-medium text-foreground/90">
                   {provenance.headline}
                 </p>
-                <p className="mt-0.5 text-sm text-cb-muted">
+                <p className="mt-0.5 text-xs text-cb-muted leading-relaxed">
                   {provenance.detail}
                 </p>
                 {provenance.honestyDisclaimer && (
-                  <p className="mt-1.5 text-xs text-cb-muted">
+                  <p className="mt-1.5 text-[11px] text-cb-muted">
                     {provenance.honestyDisclaimer}
                   </p>
                 )}

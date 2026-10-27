@@ -17,3 +17,8 @@ Plan/test/*.json
 .DS_Store
 Thumbs.db
 .vercel
+
+# Playwright
+.playwright-mcp/
+playwright-report/
+test-results/
