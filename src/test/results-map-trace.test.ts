@@ -174,7 +174,7 @@ describe("1. Evidence labels and grounded provenance distinction", () => {
     const useful = getLabelPresentation("useful-place");
     const expl = getLabelPresentation("exploratory");
 
-    assert.equal(conn.badgeText, "Connection");
+    assert.equal(conn.badgeText, "Taste-graph result");
     assert.equal(useful.badgeText, "Useful place");
     assert.equal(expl.badgeText, "Exploratory");
 
@@ -310,9 +310,9 @@ describe("1. Evidence labels and grounded provenance distinction", () => {
     const partialPres = getKitStatusPresentation("partial");
     const emptyPres = getKitStatusPresentation("empty");
 
-    assert.equal(successPres.badgeText, "Starter Kit Ready");
-    assert.equal(partialPres.badgeText, "Partial Starter Kit");
-    assert.equal(emptyPres.badgeText, "No Qualifying Matches");
+    assert.equal(successPres.badgeText, "Ready");
+    assert.equal(partialPres.badgeText, "Partial results");
+    assert.equal(emptyPres.badgeText, "No results");
 
     // Must not claim "Verified Starter Kit" or that operating hours / real-world affiliations are verified
     assert.equal(
@@ -1464,7 +1464,7 @@ describe("10. Fallback stages, repeated calls, and rejected-candidate counts in 
     assert.ok(html.includes("closed venue: 1"));
     assert.ok(html.includes("transit / station: 1"));
     assert.ok(html.includes("conflicting primary category: 1"));
-    assert.ok(html.includes("Recovered accepted places"));
+    assert.ok(html.includes("Recovered"));
   });
 });
 

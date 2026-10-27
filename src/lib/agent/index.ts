@@ -1,4 +1,8 @@
-export { runAgent, OperationTimeoutError } from "./runner";
+export {
+  runAgent,
+  OperationTimeoutError,
+  compactDiscoverResultForModel,
+} from "./runner";
 export {
   TOOL_CALL_LIMIT,
   TOTAL_RUN_TIMEOUT_MS,

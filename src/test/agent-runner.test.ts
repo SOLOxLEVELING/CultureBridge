@@ -4,7 +4,12 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import type { ContentBlock } from "@aws-sdk/client-bedrock-runtime";
 import type { DocumentType } from "@smithy/types";
-import { runAgent, TOOL_CALL_LIMIT, QLOO_REQUEST_BUDGET } from "../lib/agent";
+import {
+  runAgent,
+  compactDiscoverResultForModel,
+  TOOL_CALL_LIMIT,
+  QLOO_REQUEST_BUDGET,
+} from "../lib/agent";
 import type { AgentRunnerDeps, AgentRunInput } from "../lib/agent";
 import type {
   ConverseInput,
@@ -1890,5 +1895,137 @@ describe("runAgent — fallback: objective identity includes category tag", () =
 
     const blocked = result.trace.filter((e) => e.status === "duplicate_blocked");
     assert.equal(blocked.length, 2, "Both retries should be duplicate-blocked");
+  });
+});
+
+describe("runAgent — model context compaction and pre-confirmed anchor deduplication", () => {
+  it("compacts discover_places toolResult for the model while preserving full tags and details in structured output", async () => {
+    const manyTags = Array.from({ length: 60 }, (_, idx) => ({
+      id: idx === 0 ? "urn:tag:category:place:live_music_venue" : `urn:tag:keyword:place:kw_${idx}`,
+      name: idx === 0 ? "Live Music Venue" : `Keyword ${idx}`,
+      type: idx === 0 ? "urn:tag:category:place" : "urn:tag:keyword:place",
+    }));
+
+    const heavyDiscoverOutcome: ToolExecutionOutcome = {
+      ok: true,
+      toolName: "discover_places",
+      result: {
+        city: "Berlin",
+        accepted: [
+          {
+            entityId: "V-HEAVY",
+            name: "SO36",
+            recommendation: {
+              entityId: "V-HEAVY",
+              name: "SO36",
+              label: "connection",
+              connectionProvenance: [
+                { anchorId: "R-1", anchorName: "Radiohead", rank: 0, queryId: "anchor:R-1" },
+              ],
+              categoryEvidence: undefined,
+              explanation: "Qloo's taste graph surfaced this place when asked about Radiohead.",
+            },
+            category: "Live Music Venue",
+            address: "Oranienstraße 190",
+            neighborhood: "Kreuzberg",
+            website: "https://so36.com",
+            phone: "+49 30 61401306",
+            priceLevel: 2,
+            location: { lat: 52.5005, lon: 13.4222 },
+            mappable: true,
+            tags: manyTags,
+            sourceQueryTypes: ["single-anchor"],
+          },
+        ],
+        reviewCount: 0,
+        rejectedCount: 1,
+        rejectedReasons: { hotel_accommodation: 1 },
+        failureCount: 0,
+        budget: { queriesUsed: 2, queriesBudget: 2, totalResults: 2 },
+      } satisfies DiscoverPlacesResult,
+    };
+
+    const capturedConverseInputs: ConverseInput[] = [];
+    const responses = [
+      makeOutput([
+        toolUse("c1", "discover_places", {
+          anchor_ids: ["R-1"],
+          anchor_names: ["Radiohead"],
+          city: "Berlin",
+        }),
+      ]),
+      makeOutput([
+        toolUse("c2", "finalize", {
+          summary: "Top Berlin venue.",
+          recommendation_ids: ["V-HEAVY"],
+        }),
+      ]),
+    ];
+
+    let turnIdx = 0;
+    const result = await runAgent(
+      {
+        city: "Berlin",
+        anchors: [{ query: "Radiohead", type: "urn:entity:artist" }],
+        confirmedAnchors: [{ entityId: "R-1", name: "Radiohead" }],
+      },
+      {
+        converse: async (inp) => {
+          capturedConverseInputs.push({
+            ...inp,
+            messages: inp.messages.map((m) => ({ ...m, content: [...m.content] })),
+          });
+          return responses[turnIdx++];
+        },
+        dispatchToolCall: passthroughDispatch({
+          discover_places: [heavyDiscoverOutcome],
+        }),
+      },
+    );
+
+    assert.equal(result.status, "completed");
+    assert.equal(capturedConverseInputs.length, 2);
+
+    // 1. Pre-confirmed anchor "Radiohead" must not be redundantly listed under "Anchors to resolve:"
+    assert.equal(
+      capturedConverseInputs[0].system?.includes("Anchors to resolve:"),
+      false,
+    );
+    assert.ok(
+      capturedConverseInputs[0].system?.includes("Pre-confirmed anchors"),
+    );
+    assert.deepEqual(capturedConverseInputs[0].tools?.toolChoice, { any: {} });
+
+    // 2. Turn 2 toolResult sent to the model must be compacted (no 60-element raw tags array)
+    const turn2UserMsg = capturedConverseInputs[1].messages[2];
+    const toolResultBlock = turn2UserMsg.content[0];
+    assert.ok("toolResult" in toolResultBlock && toolResultBlock.toolResult);
+    const modelJson = (toolResultBlock.toolResult.content?.[0] as { json: Record<string, unknown> }).json;
+    const modelAccepted = modelJson.accepted as Record<string, unknown>[];
+    assert.equal(modelAccepted.length, 1);
+    assert.deepEqual(modelAccepted[0], {
+      entityId: "V-HEAVY",
+      name: "SO36",
+      category: "Live Music Venue",
+      neighborhood: "Kreuzberg",
+      label: "connection",
+    });
+    assert.equal("tags" in modelAccepted[0], false);
+
+    // 3. Full structured output still retains all 60 tags, website, coordinates, and provenance
+    assert.ok(result.output);
+    assert.equal(result.output.recommendations.length, 1);
+    const finalRec = result.output.recommendations[0];
+    assert.equal(finalRec.entityId, "V-HEAVY");
+    assert.equal(finalRec.details.website, "https://so36.com");
+    assert.equal(finalRec.details.mappable, true);
+    assert.equal(finalRec.tags.length, 60);
+    assert.deepEqual(finalRec.categories, ["Live Music Venue"]);
+
+    const directCompacted = compactDiscoverResultForModel(
+      heavyDiscoverOutcome.result as DiscoverPlacesResult,
+    );
+    assert.equal(directCompacted.accepted.length, 1);
+    assert.equal("tags" in directCompacted.accepted[0], false);
   });
 });

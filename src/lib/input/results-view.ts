@@ -17,35 +17,35 @@ export interface LabelPresentation {
 export const LABEL_PRESENTATION: Record<RecommendationLabel, LabelPresentation> = {
   connection: {
     label: "connection",
-    badgeText: "Connection",
+    badgeText: "Taste-graph result",
     symbol: "◆",
-    shortTitle: "Single-anchor Qloo query match",
+    shortTitle: "Surfaced via taste-graph search",
     description:
-      "Returned in the top 10 of a single-anchor Qloo query and passed deterministic validation. Indicates taste-graph query provenance, not a real-world endorsement or affiliation.",
+      "Returned in the top 10 of a single-interest Qloo query and passed deterministic screening. Indicates taste-graph search provenance, not a verified real-world cultural relationship or endorsement.",
     badgeClassName:
-      "border-emerald-600/30 bg-emerald-500/10 text-emerald-800 dark:border-emerald-400/30 dark:bg-emerald-500/15 dark:text-emerald-300",
+      "border border-cb-border bg-cb-surface text-foreground/85",
     markerClassName: "cb-marker-connection",
   },
   "useful-place": {
     label: "useful-place",
     badgeText: "Useful place",
     symbol: "▪",
-    shortTitle: "Category-matched venue with practical details",
+    shortTitle: "Category-matched place with practical details",
     description:
-      "Passed place-category tag scoring and includes practical venue details (address, phone, or website) in Qloo's catalog. Makes no claim about a specific single anchor or current operating status.",
+      "Passed category-tag scoring and includes practical venue details (address, phone, or website) in Qloo's catalog. Makes no claim about a specific interest or current operating status.",
     badgeClassName:
-      "border-foreground/25 bg-foreground/[0.07] text-foreground/90",
+      "border border-cb-border bg-cb-surface text-foreground/85",
     markerClassName: "cb-marker-useful",
   },
   exploratory: {
     label: "exploratory",
     badgeText: "Exploratory",
     symbol: "◇",
-    shortTitle: "Blended profile or broader discovery suggestion",
+    shortTitle: "Broader suggestion from combined taste search",
     description:
-      "Passed entity validation from a blended multi-anchor query, fallback stage, or lower-ranked query without direct single-anchor connection evidence.",
+      "Passed entity screening from a blended multi-interest query, fallback stage, or lower-ranked query without direct single-interest match evidence.",
     badgeClassName:
-      "border-foreground/15 border-dashed bg-foreground/[0.025] text-foreground/70",
+      "border border-cb-border border-dashed bg-cb-surface/60 text-cb-muted",
     markerClassName: "cb-marker-exploratory",
   },
 };
@@ -71,27 +71,27 @@ export const KIT_STATUS_PRESENTATION: Record<
 > = {
   success: {
     status: "success",
-    badgeText: "Starter Kit Ready",
+    badgeText: "Ready",
     scopeNote:
-      "Places passed Qloo taste-graph lookup and general deterministic screening (excluding flagged accommodation, transit, closed, and duplicate listings). Category-conflict checks apply only to recommendations for which category evidence was explicitly evaluated; Qloo category tags are not all independently validated, and CultureBridge does not independently verify current operating status, hours, or real-world affiliations.",
+      "These places were found through taste-data searches and passed quality checks, excluding flagged accommodation, transit, closed, and duplicate listings. Category-conflict checks apply only to recommendations for which category evidence was explicitly evaluated; Qloo category tags are not all independently validated, and CultureBridge does not independently verify current operating status, hours, or real-world affiliations.",
     badgeClassName:
-      "border-emerald-600/30 bg-emerald-500/10 text-emerald-800 dark:text-emerald-300",
+      "border border-cb-border bg-cb-surface text-cb-muted",
   },
   partial: {
     status: "partial",
-    badgeText: "Partial Starter Kit",
+    badgeText: "Partial results",
     scopeNote:
-      "Showing only candidates that passed deterministic screening; unaccepted or ungrounded candidate IDs were excluded.",
+      "Some candidates didn't pass quality checks and were excluded. Only verified recommendations are shown.",
     badgeClassName:
-      "border-amber-600/30 bg-amber-500/10 text-amber-800 dark:text-amber-300",
+      "border border-cb-warning/30 bg-cb-warning-soft text-cb-warning",
   },
   empty: {
     status: "empty",
-    badgeText: "No Qualifying Matches",
+    badgeText: "No results",
     scopeNote:
-      "No candidates returned by Qloo met the deterministic screening criteria for this query.",
+      "No places met our quality criteria for this combination of interests and city.",
     badgeClassName:
-      "border-foreground/20 bg-foreground/[0.05] text-foreground/75",
+      "border border-cb-border bg-cb-surface text-cb-muted",
   },
 };
 

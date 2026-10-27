@@ -68,7 +68,6 @@ export default function ResultsMap({
     [recommendations, selectedEntityId],
   );
 
-  const unmappedCount = Math.max(0, recommendations.length - markers.length);
 
   function fitAllMarkers() {
     const map = mapRef.current;
@@ -120,13 +119,11 @@ export default function ResultsMap({
     const map = mapRef.current;
     const layerMap = markersLayerRef.current;
 
-    // Clear existing markers
     for (const existingMarker of layerMap.values()) {
       existingMarker.remove();
     }
     layerMap.clear();
 
-    // Add validated markers
     for (const item of markers) {
       const isSelected = item.entityId === selectedEntityId;
       const leafletMarker = L.marker([item.lat, item.lon], {
@@ -144,7 +141,6 @@ export default function ResultsMap({
       layerMap.set(item.entityId, leafletMarker);
     }
 
-    // Apply initial bounds
     if (viewport.mode === "single") {
       map.setView([viewport.center.lat, viewport.center.lon], viewport.zoom, {
         animate: false,
@@ -203,34 +199,23 @@ export default function ResultsMap({
     };
   }, []);
 
-  // Empty map state when no recommendations have valid coordinates
+  // Empty state
   if (markers.length === 0) {
     return (
       <div
         role="region"
-        aria-label={`${city || "Destination"} recommendation map`}
-        className="rounded-lg border border-foreground/15 bg-foreground/[0.02] p-5"
+        aria-label={`${city || "Destination"} map`}
+        className="rounded-lg border border-cb-border bg-cb-surface/50 p-6"
       >
-        <div className="flex items-start justify-between gap-3">
-          <div>
-            <h4 className="text-xs font-semibold tracking-tight text-foreground/85">
-              Map view · {city || "Destination"}
-            </h4>
-            <p className="mt-1 text-xs leading-relaxed text-foreground/65">
-              {recommendations.length === 0
-                ? "No accepted places to plot on the map."
-                : `None of the ${recommendations.length} accepted ${
-                    recommendations.length === 1 ? "place" : "places"
-                  } included valid latitude and longitude coordinates in Qloo. All recommendations remain available in the list.`}
-            </p>
-          </div>
-          <span className="shrink-0 rounded border border-foreground/15 px-2 py-0.5 font-mono text-[11px] text-foreground/60">
-            0 mapped
-          </span>
-        </div>
-        <p className="mt-3 text-[11px] text-foreground/50">
-          CultureBridge only plots coordinates directly returned by Qloo and
-          never infers or fabricates map pins.
+        <h4 className="text-sm font-semibold">
+          {city || "Destination"} map
+        </h4>
+        <p className="mt-1.5 text-sm text-cb-muted leading-relaxed">
+          {recommendations.length === 0
+            ? "No places to show on the map."
+            : `None of the ${recommendations.length} ${
+                recommendations.length === 1 ? "place" : "places"
+              } had map coordinates. All recommendations are in the list.`}
         </p>
       </div>
     );
@@ -239,66 +224,41 @@ export default function ResultsMap({
   return (
     <div
       role="region"
-      aria-label={`${city || "Destination"} recommendation map`}
-      className="overflow-hidden rounded-lg border border-foreground/15 bg-background"
+      aria-label={`${city || "Destination"} map`}
+      className="overflow-hidden rounded-lg border border-cb-border bg-background"
     >
-      {/* Map Header Bar */}
-      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-foreground/10 bg-foreground/[0.02] px-3.5 py-2.5">
-        <div className="flex flex-wrap items-center gap-2 text-xs">
-          <span className="font-semibold text-foreground">
-            {city || "Destination"} Map
-          </span>
-          <span className="font-mono text-[11px] text-foreground/60">
+      {/* Map header */}
+      <div className="flex items-center justify-between border-b border-cb-border bg-cb-surface/40 px-4 py-2.5">
+        <div className="flex items-center gap-2 text-sm">
+          <span className="font-semibold">{city} map</span>
+          <span className="text-cb-muted">
             {markers.length} of {recommendations.length} mapped
           </span>
-          {unmappedCount > 0 && (
-            <span className="rounded border border-foreground/15 bg-background px-1.5 py-0.5 font-mono text-[10px] text-foreground/60">
-              {unmappedCount} in list without coordinates
-            </span>
-          )}
         </div>
 
         {markers.length > 1 && (
           <button
             type="button"
             onClick={fitAllMarkers}
-            className="rounded border border-foreground/20 bg-background px-2 py-0.5 font-mono text-[11px] text-foreground/75 transition-colors hover:bg-foreground/[0.05] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-foreground"
+            className="rounded-md border border-cb-border bg-background px-2.5 py-1 text-xs font-medium text-foreground hover:bg-cb-surface focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-cb-accent"
           >
-            Fit all pins
+            Fit all
           </button>
         )}
       </div>
 
-      {/* Leaflet Canvas — compact on mobile so it never consumes the full screen */}
+      {/* Map canvas */}
       <div
         ref={containerRef}
-        className="cb-leaflet-container h-60 w-full sm:h-72 lg:h-80"
+        className="cb-leaflet-container h-64 w-full sm:h-80 lg:h-96"
       />
 
-      {/* Keyboard-accessible pin selector bar */}
-      <div className="border-t border-foreground/10 bg-foreground/[0.015] px-3.5 py-2.5">
-        <div className="flex items-center justify-between gap-2">
-          <span className="text-[11px] font-medium text-foreground/60">
-            Mapped places (select to focus pin &amp; card):
-          </span>
-          <span className="text-[10px] text-foreground/50">
-            Map data &copy;{" "}
-            <a
-              href="https://www.openstreetmap.org/copyright"
-              target="_blank"
-              rel="noopener noreferrer"
-              className="underline underline-offset-2 hover:text-foreground/80"
-            >
-              OpenStreetMap
-            </a>{" "}
-            contributors
-          </span>
-        </div>
-
+      {/* Pin selector */}
+      <div className="border-t border-cb-border bg-cb-surface/30 px-4 py-3">
         <div
           role="group"
-          aria-label="Mapped recommendation pins"
-          className="mt-2 flex flex-wrap gap-1.5"
+          aria-label="Map pins"
+          className="flex flex-wrap gap-1.5"
         >
           {markers.map((marker) => {
             const isSelected = marker.entityId === selectedEntityId;
@@ -308,56 +268,46 @@ export default function ResultsMap({
                 type="button"
                 aria-pressed={isSelected}
                 onClick={() => onSelectEntity(marker.entityId)}
-                className={`inline-flex items-center gap-1.5 rounded border px-2 py-1 text-left text-xs transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-foreground ${
+                className={`inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-left text-xs transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-cb-accent ${
                   isSelected
-                    ? "border-foreground bg-foreground text-background font-medium"
-                    : "border-foreground/15 bg-background text-foreground/80 hover:border-foreground/35 hover:bg-foreground/[0.04]"
+                    ? "border-cb-accent bg-cb-accent text-cb-accent-fg font-medium"
+                    : "border-cb-border bg-background text-foreground hover:bg-cb-surface"
                 }`}
               >
-                <span className="font-mono text-[11px]" aria-hidden="true">
-                  {marker.symbol}
+                <span className="font-semibold" aria-hidden="true">
                   {marker.orderIndex}
                 </span>
-                <span className="max-w-[10rem] truncate">{marker.name}</span>
+                <span className="max-w-[8rem] truncate">{marker.name}</span>
               </button>
             );
           })}
         </div>
 
-        {/* Active selection inspector bar */}
+        {/* Selected place info */}
         {selection.selectedRecommendation && (
           <div
             role="status"
             aria-live="polite"
-            className="mt-2.5 flex flex-wrap items-center justify-between gap-2 rounded border border-foreground/15 bg-background px-3 py-2 text-xs"
+            className="mt-2.5 flex flex-wrap items-center justify-between gap-2 rounded-lg border border-cb-border bg-background px-3.5 py-2.5 text-sm"
           >
             {selection.selectedMarker ? (
-              <div className="min-w-0 space-y-0.5">
-                <div className="flex flex-wrap items-center gap-1.5">
-                  <span className="font-mono text-[11px] font-semibold">
-                    Pin {selection.selectedMarker.symbol}
-                    {selection.selectedMarker.orderIndex}
-                  </span>
-                  <span className="font-semibold text-foreground">
-                    {selection.selectedMarker.name}
-                  </span>
-                  <span className="rounded border border-foreground/15 px-1.5 py-0.5 font-mono text-[10px] text-foreground/65">
-                    {selection.selectedMarker.badgeText}
-                  </span>
-                </div>
-                <p className="truncate text-[11px] text-foreground/60">
-                  {selection.selectedMarker.locationLine ??
-                    `${selection.selectedMarker.lat.toFixed(4)}, ${selection.selectedMarker.lon.toFixed(4)}`}
-                </p>
+              <div className="min-w-0">
+                <span className="font-medium">
+                  {selection.selectedMarker.name}
+                </span>
+                {selection.selectedMarker.locationLine && (
+                  <p className="mt-0.5 truncate text-xs text-cb-muted">
+                    {selection.selectedMarker.locationLine}
+                  </p>
+                )}
               </div>
             ) : (
-              <div className="min-w-0 space-y-0.5">
-                <p className="font-medium text-foreground/85">
-                  {selection.selectedRecommendation.name} · Not on map
-                </p>
-                <p className="text-[11px] text-foreground/60">
-                  This place has no coordinates in Qloo and is shown in the
-                  recommendation list only.
+              <div className="min-w-0">
+                <span className="font-medium">
+                  {selection.selectedRecommendation.name}
+                </span>
+                <p className="mt-0.5 text-xs text-cb-muted">
+                  Not on map — no coordinates available
                 </p>
               </div>
             )}
@@ -368,9 +318,9 @@ export default function ResultsMap({
                 onClick={() =>
                   onJumpToCard(selection.selectedRecommendation!.entityId)
                 }
-                className="shrink-0 rounded border border-foreground/20 px-2.5 py-1 text-[11px] font-medium text-foreground hover:bg-foreground/[0.05] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-foreground"
+                className="shrink-0 rounded-lg border border-cb-border px-3 py-1.5 text-xs font-medium text-foreground hover:bg-cb-surface focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-cb-accent"
               >
-                Jump to card
+                Jump to details
               </button>
             )}
           </div>

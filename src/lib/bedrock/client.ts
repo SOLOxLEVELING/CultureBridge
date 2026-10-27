@@ -1,7 +1,9 @@
+import https from "node:https";
 import {
   BedrockRuntimeClient,
   ConverseCommand,
 } from "@aws-sdk/client-bedrock-runtime";
+import { NodeHttpHandler } from "@smithy/node-http-handler";
 import type {
   Message,
   SystemContentBlock,
@@ -41,7 +43,12 @@ let runtimeClient: BedrockRuntimeClient | null = null;
 function getClient(): BedrockRuntimeClient {
   if (!runtimeClient) {
     const config = getConfig();
-    runtimeClient = new BedrockRuntimeClient({ region: config.region });
+    runtimeClient = new BedrockRuntimeClient({
+      region: config.region,
+      requestHandler: new NodeHttpHandler({
+        httpsAgent: new https.Agent({ keepAlive: true, family: 4 }),
+      }),
+    });
   }
   return runtimeClient;
 }

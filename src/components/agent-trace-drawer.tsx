@@ -27,33 +27,29 @@ const STEP_STATUS_STYLES: Record<
   { badge: string; symbol: string; className: string }
 > = {
   ok: {
-    badge: "Completed",
+    badge: "Done",
     symbol: "✓",
-    className:
-      "border-emerald-600/25 bg-emerald-500/10 text-emerald-800 dark:text-emerald-300",
+    className: "border-cb-confirmed/30 bg-cb-confirmed-soft text-cb-confirmed",
   },
   recovered: {
     badge: "Recovered",
     symbol: "↺",
-    className:
-      "border-emerald-600/25 bg-emerald-500/10 text-emerald-800 dark:text-emerald-300",
+    className: "border-cb-confirmed/30 bg-cb-confirmed-soft text-cb-confirmed",
   },
   warning: {
     badge: "0 accepted",
     symbol: "!",
-    className:
-      "border-amber-600/25 bg-amber-500/10 text-amber-800 dark:text-amber-300",
+    className: "border-cb-warning/30 bg-cb-warning-soft text-cb-warning",
   },
   skipped: {
     badge: "Skipped",
     symbol: "–",
-    className: "border-foreground/15 bg-foreground/[0.04] text-foreground/65",
+    className: "border-cb-border bg-cb-surface text-cb-muted",
   },
   failed: {
-    badge: "Blocked / Failed",
+    badge: "Failed",
     symbol: "×",
-    className:
-      "border-red-600/25 bg-red-500/10 text-red-800 dark:text-red-300",
+    className: "border-cb-error/30 bg-cb-error-soft text-cb-error",
   },
 };
 
@@ -61,7 +57,7 @@ function formatCacheBadge(
   status: PublicSearchProcess["qlooCacheStatus"] | null,
 ): string | null {
   if (!status) return null;
-  if (status === "cached") return "Cached (24h TTL)";
+  if (status === "cached") return "Cached (24h)";
   if (status === "mixed") return "Live + cached";
   return "Fetched live";
 }
@@ -70,9 +66,9 @@ function formatQueryScope(
   scope: PublicSearchStep["queryScope"],
 ): string | null {
   if (!scope) return null;
-  if (scope === "single-and-blended") return "Single-anchor + blended queries";
-  if (scope === "single-anchor") return "Single-anchor query";
-  return "Blended profile query";
+  if (scope === "single-and-blended") return "Single-anchor + blended";
+  if (scope === "single-anchor") return "Single-anchor";
+  return "Blended profile";
 }
 
 export function AgentTraceDrawer({
@@ -98,33 +94,18 @@ export function AgentTraceDrawer({
     <section
       aria-labelledby={headingId}
       onKeyDown={handleKeyDown}
-      className="rounded-lg border border-foreground/15 bg-foreground/[0.015]"
+      className="rounded-lg border border-cb-border bg-cb-surface/40"
     >
-      {/* Collapsible Trigger Header */}
-      <div className="flex flex-wrap items-center justify-between gap-3 p-4">
-        <div className="space-y-1">
-          <div className="flex flex-wrap items-center gap-2">
-            <h4
-              id={headingId}
-              className="text-xs font-semibold tracking-tight text-foreground"
-            >
-              How CultureBridge arrived at these recommendations
-            </h4>
-            <span className="rounded border border-foreground/15 bg-background px-1.5 py-0.5 font-mono text-[11px] text-foreground/75">
-              {process.mode === "deterministic"
-                ? "Deterministic fallback"
-                : "Agent-assisted"}
-            </span>
-            <span className="rounded border border-foreground/15 bg-background px-1.5 py-0.5 font-mono text-[11px] text-foreground/65">
-              {process.cached
-                ? "Kit cached"
-                : formatCacheBadge(process.qlooCacheStatus)}
-            </span>
-            <span className="font-mono text-[11px] text-foreground/55">
-              {process.durationMs} ms
-            </span>
-          </div>
-          <p className="text-xs text-foreground/65">{process.outcomeSummary}</p>
+      {/* Header */}
+      <div className="flex flex-wrap items-center justify-between gap-3 px-4 py-3.5">
+        <div className="space-y-0.5">
+          <h4
+            id={headingId}
+            className="text-sm font-semibold text-foreground"
+          >
+            How these suggestions were found
+          </h4>
+          <p className="text-sm text-cb-muted">{process.outcomeSummary}</p>
         </div>
 
         <button
@@ -132,152 +113,125 @@ export function AgentTraceDrawer({
           aria-expanded={isOpen}
           aria-controls={panelId}
           onClick={onToggle}
-          className="inline-flex shrink-0 items-center gap-1.5 rounded-md border border-foreground/20 bg-background px-3 py-1.5 text-xs font-medium text-foreground transition-colors hover:bg-foreground/[0.04] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-foreground"
+          className="inline-flex shrink-0 items-center gap-1.5 rounded-lg border border-cb-border bg-background px-3.5 py-2 text-sm font-medium text-foreground hover:bg-cb-surface focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-cb-accent"
         >
-          <span>{isOpen ? "Hide search process" : "Inspect search process"}</span>
-          <span className="font-mono text-[11px] text-foreground/55">
-            ({process.steps.length})
+          {isOpen ? "Hide" : "Show details"}
+          <span className="text-xs text-cb-muted">
+            ({process.steps.length} steps)
           </span>
         </button>
       </div>
 
-      {/* Collapsible Body */}
+      {/* Expanded panel */}
       {isOpen && (
         <div
           id={panelId}
           role="region"
           aria-labelledby={headingId}
-          className="space-y-4 border-t border-foreground/10 p-4 text-xs"
+          className="space-y-4 border-t border-cb-border p-4 text-sm"
         >
-          {/* 1. Run Overview Grid */}
-          <dl className="grid grid-cols-1 gap-2.5 rounded-md border border-foreground/12 bg-background p-3.5 sm:grid-cols-2 lg:grid-cols-4">
+          {/* Run overview */}
+          <dl className="grid grid-cols-1 gap-3 rounded-lg border border-cb-border bg-background p-4 sm:grid-cols-2 lg:grid-cols-4">
             <div>
-              <dt className="text-[11px] text-foreground/55">
-                Destination &amp; Taste Graph
-              </dt>
-              <dd className="mt-0.5 font-medium text-foreground">
-                {process.city} ·{" "}
-                {process.qlooGrounded
-                  ? "Qloo taste graph (/search, /v2/insights)"
-                  : "Qloo"}
-              </dd>
+              <dt className="text-xs font-medium text-cb-muted">City</dt>
+              <dd className="mt-0.5 font-medium">{process.city}</dd>
             </div>
-
             <div>
-              <dt className="text-[11px] text-foreground/55">Execution Mode</dt>
-              <dd className="mt-0.5 font-medium text-foreground">
-                {process.modeLabel}
-              </dd>
+              <dt className="text-xs font-medium text-cb-muted">Mode</dt>
+              <dd className="mt-0.5 font-medium">{process.modeLabel}</dd>
             </div>
-
             <div>
-              <dt className="text-[11px] text-foreground/55">
-                Cache &amp; Timing
-              </dt>
-              <dd className="mt-0.5 font-mono text-foreground">
+              <dt className="text-xs font-medium text-cb-muted">Cache</dt>
+              <dd className="mt-0.5 font-mono text-xs">
                 {process.cached
-                  ? "Served from 24h response cache"
-                  : formatCacheBadge(process.qlooCacheStatus)}{" "}
-                · {process.durationMs} ms
+                  ? "24h response cache"
+                  : formatCacheBadge(process.qlooCacheStatus)}
               </dd>
             </div>
-
             <div>
-              <dt className="text-[11px] text-foreground/55">Final Outcome</dt>
-              <dd className="mt-0.5 font-medium text-foreground capitalize">
-                {process.outcome}
+              <dt className="text-xs font-medium text-cb-muted">Duration</dt>
+              <dd className="mt-0.5 font-mono text-xs">
+                {process.durationMs} ms
               </dd>
             </div>
           </dl>
 
-          {/* 2. Fallback Summary Banner (when fallback occurred) */}
+          {/* Fallback notice */}
           {process.fallbackTriggered && (
-            <div className="rounded-md border border-foreground/15 bg-background p-3.5">
+            <div className="rounded-lg border border-cb-border bg-background p-4">
               <div className="flex flex-wrap items-center justify-between gap-2">
-                <span className="font-semibold text-foreground">
+                <span className="font-medium">
                   {process.mode === "deterministic"
-                    ? "Deterministic Discovery Fallback Used"
-                    : "Category Fallback Chain Executed"}
+                    ? "Deterministic fallback used"
+                    : "Category fallback chain executed"}
                 </span>
                 <span
-                  className={`rounded border px-1.5 py-0.5 font-mono text-[11px] ${
+                  className={`rounded-md px-2 py-0.5 text-xs font-medium ${
                     process.fallbackRecovered
-                      ? "border-emerald-600/25 bg-emerald-500/10 text-emerald-800 dark:text-emerald-300"
-                      : "border-amber-600/25 bg-amber-500/10 text-amber-800 dark:text-amber-300"
+                      ? "bg-cb-confirmed-soft text-cb-confirmed"
+                      : "bg-cb-warning-soft text-cb-warning"
                   }`}
                 >
-                  {process.fallbackRecovered
-                    ? "Recovered accepted places"
-                    : "0 places recovered"}
+                  {process.fallbackRecovered ? "Recovered" : "No recovery"}
                 </span>
               </div>
               {process.fallbackReason && (
-                <p className="mt-1 text-foreground/70">
+                <p className="mt-1.5 text-cb-muted">
                   {process.fallbackReason}
                 </p>
               )}
             </div>
           )}
 
-          {/* 3. Deterministic Validation Funnel Counts */}
-          <div className="rounded-md border border-foreground/12 bg-background p-3.5">
+          {/* Validator totals */}
+          <div className="rounded-lg border border-cb-border bg-background p-4">
             <div className="flex flex-wrap items-center justify-between gap-2">
-              <span className="font-semibold text-foreground">
-                Deterministic Validator Totals
-              </span>
-              <div className="flex flex-wrap items-center gap-3 font-mono text-[11px]">
-                <span className="text-emerald-800 dark:text-emerald-300">
+              <span className="font-medium">Quality check totals</span>
+              <div className="flex flex-wrap items-center gap-3 font-mono text-xs">
+                <span className="text-cb-confirmed">
                   Accepted: <strong>{process.totals.accepted}</strong>
                 </span>
-                <span className="text-foreground/70">
-                  Held for review: <strong>{process.totals.review}</strong>
+                <span className="text-cb-muted">
+                  Review: <strong>{process.totals.review}</strong>
                 </span>
-                <span className="text-foreground/70">
+                <span className="text-cb-muted">
                   Rejected: <strong>{process.totals.rejected}</strong>
                 </span>
               </div>
             </div>
 
             {rejectionEntries.length > 0 ? (
-              <div className="mt-2 flex flex-wrap items-center gap-1.5 pt-2 border-t border-foreground/10">
-                <span className="text-[11px] text-foreground/55">
-                  Filtered out by validator:
-                </span>
+              <div className="mt-2.5 flex flex-wrap items-center gap-1.5 border-t border-cb-border pt-2.5">
+                <span className="text-xs text-cb-muted">Filtered out:</span>
                 {rejectionEntries.map(([reasonKey, count]) => (
                   <span
                     key={reasonKey}
-                    className="rounded border border-foreground/15 bg-foreground/[0.03] px-2 py-0.5 font-mono text-[11px] text-foreground/75"
+                    className="rounded-md bg-cb-surface px-2 py-0.5 font-mono text-xs text-cb-muted"
                   >
                     {formatRejectionReasonLabel(reasonKey)}: {count}
                   </span>
                 ))}
               </div>
             ) : (
-              <p className="mt-1 text-[11px] text-foreground/55">
-                Every shown place passed deterministic checks against closed
-                venues, hotels/accommodations, transit stations, duplicates, and
-                category conflicts.
+              <p className="mt-1.5 text-xs text-cb-muted">
+                All shown places passed checks for closed venues, hotels,
+                transit stations, duplicates, and category conflicts.
               </p>
             )}
           </div>
 
-          {/* 4. Sequential Step-by-Step Log */}
+          {/* Step log */}
           <div className="space-y-2">
             <div className="flex items-center justify-between">
-              <span className="font-semibold text-foreground/85">
-                Step-by-step search &amp; verification log
-              </span>
-              <span className="text-[11px] text-foreground/50">
-                Repeated attempts are numbered distinctly
-              </span>
+              <span className="font-medium">Step-by-step log</span>
             </div>
 
             {process.steps.length === 0 ? (
-              <p className="rounded-md border border-foreground/12 bg-background p-3 text-foreground/60">
-                No individual step events were recorded for this run.
+              <p className="rounded-lg border border-cb-border bg-background p-4 text-cb-muted">
+                No step events recorded for this run.
               </p>
             ) : (
-              <ol className="divide-y divide-foreground/10 rounded-md border border-foreground/12 bg-background">
+              <ol className="divide-y divide-cb-border rounded-lg border border-cb-border bg-background">
                 {process.steps.map((step) => {
                   const statusStyle = STEP_STATUS_STYLES[step.status];
                   const scopeLabel = formatQueryScope(step.queryScope);
@@ -289,63 +243,61 @@ export function AgentTraceDrawer({
                     : [];
 
                   return (
-                    <li key={step.stepNumber} className="space-y-1.5 p-3">
+                    <li key={step.stepNumber} className="space-y-1.5 p-3.5">
                       <div className="flex flex-wrap items-center justify-between gap-2">
                         <div className="flex flex-wrap items-center gap-1.5">
-                          <span className="rounded bg-foreground/[0.06] px-1.5 py-0.5 font-mono text-[11px] font-semibold text-foreground/80">
+                          <span className="rounded bg-cb-surface px-1.5 py-0.5 font-mono text-xs font-semibold text-cb-muted">
                             #{step.stepNumber}
                           </span>
-                          <span className="rounded border border-foreground/15 px-1.5 py-0.5 font-mono text-[10px] text-foreground/65">
+                          <span className="rounded-md bg-cb-surface px-2 py-0.5 text-xs text-cb-muted">
                             {STEP_KIND_LABELS[step.kind]}
                           </span>
                           {step.attemptNumber > 1 && (
-                            <span className="rounded border border-foreground/20 bg-foreground/[0.04] px-1.5 py-0.5 font-mono text-[10px] text-foreground/75">
+                            <span className="rounded-md bg-cb-surface px-2 py-0.5 text-xs text-cb-muted">
                               Attempt #{step.attemptNumber}
                             </span>
                           )}
-                          <span className="font-semibold text-foreground">
-                            {step.title}
-                          </span>
+                          <span className="font-medium">{step.title}</span>
                         </div>
 
-                        <div className="flex flex-wrap items-center gap-1.5 font-mono text-[11px]">
+                        <div className="flex flex-wrap items-center gap-1.5 font-mono text-xs">
                           {scopeLabel && (
-                            <span className="rounded border border-foreground/12 px-1.5 py-0.5 text-[10px] text-foreground/60">
+                            <span className="rounded-md bg-cb-surface px-2 py-0.5 text-xs text-cb-muted">
                               {scopeLabel}
                             </span>
                           )}
                           {stepCacheLabel && (
-                            <span className="rounded border border-foreground/12 px-1.5 py-0.5 text-[10px] text-foreground/60">
+                            <span className="rounded-md bg-cb-surface px-2 py-0.5 text-xs text-cb-muted">
                               {stepCacheLabel}
                             </span>
                           )}
                           {step.durationMs > 0 && (
-                            <span className="text-foreground/50">
+                            <span className="text-cb-muted">
                               {step.durationMs} ms
                             </span>
                           )}
                           <span
-                            className={`inline-flex items-center gap-1 rounded border px-1.5 py-0.5 text-[10px] font-medium ${statusStyle.className}`}
+                            className={`inline-flex items-center gap-1 rounded-md border px-1.5 py-0.5 text-xs font-medium ${statusStyle.className}`}
                           >
                             <span aria-hidden="true">{statusStyle.symbol}</span>
-                            <span>{statusStyle.badge}</span>
+                            {statusStyle.badge}
                           </span>
                         </div>
                       </div>
 
-                      <p className="text-foreground/70 leading-relaxed">
+                      <p className="text-cb-muted leading-relaxed">
                         {step.detail}
                       </p>
 
                       {step.counts && (
-                        <div className="flex flex-wrap items-center gap-x-3 gap-y-1 pt-0.5 font-mono text-[11px] text-foreground/60">
+                        <div className="flex flex-wrap items-center gap-x-3 gap-y-1 pt-0.5 font-mono text-xs text-cb-muted">
                           <span>Accepted: {step.counts.accepted}</span>
                           <span>Review: {step.counts.review}</span>
                           <span>Rejected: {step.counts.rejected}</span>
                           {stepRejections.map(([rKey, rCount]) => (
                             <span
                               key={rKey}
-                              className="rounded bg-foreground/[0.04] px-1.5 py-0.5 text-[10px]"
+                              className="rounded bg-cb-surface px-1.5 py-0.5"
                             >
                               {formatRejectionReasonLabel(rKey)}: {rCount}
                             </span>

@@ -221,24 +221,70 @@ function sanitizeErrorForTrace(err: unknown): string {
   return err.message.slice(0, 500);
 }
 
+function getUnresolvedAnchors(
+  anchors: AnchorSpec[],
+  confirmed: ConfirmedAnchor[],
+): AnchorSpec[] {
+  if (confirmed.length === 0) return anchors;
+  const confirmedNames = new Set(
+    confirmed.map((c) => c.name.toLowerCase().trim()),
+  );
+  return anchors.filter(
+    (a) => !confirmedNames.has(a.query.toLowerCase().trim()),
+  );
+}
+
+export interface CompactModelPlaceEntry {
+  entityId: string;
+  name: string;
+  category: string | null;
+  neighborhood: string | null;
+  label: string | null;
+}
+
+export function compactDiscoverResultForModel(
+  result: DiscoverPlacesResult,
+): Omit<DiscoverPlacesResult, "accepted"> & { accepted: CompactModelPlaceEntry[] } {
+  return {
+    city: result.city,
+    accepted: result.accepted.map((e) => ({
+      entityId: e.entityId,
+      name: e.name,
+      category: e.category,
+      neighborhood: e.neighborhood,
+      label: e.recommendation?.label ?? null,
+    })),
+    reviewCount: result.reviewCount,
+    rejectedCount: result.rejectedCount,
+    rejectedReasons: result.rejectedReasons,
+    failureCount: result.failureCount,
+    budget: result.budget,
+  };
+}
+
 function buildSystemPrompt(
   city: string,
   anchors: AnchorSpec[],
   confirmed: ConfirmedAnchor[],
 ): string {
+  const unresolved = getUnresolvedAnchors(anchors, confirmed);
   const lines: string[] = [
     `You are CultureBridge, a cultural onboarding agent. Discover places in ${city} based on the user's cultural tastes.`,
     "",
     "Steps: resolve each anchor → discover places → finalize with accepted recommendation IDs.",
     `Destination city: ${city}. Do not change it.`,
-    "Only use entity IDs from tool results. Only finalize with accepted recommendation IDs.",
+    "Only use entity IDs from tool results. Only finalize with accepted recommendation IDs (select up to 8 top places).",
+    "Output tool calls only with no text blocks, and keep the finalize summary under 10 words.",
   ];
-  if (anchors.length > 0) {
+  if (unresolved.length > 0) {
     lines.push("", "Anchors to resolve:");
-    for (const a of anchors) lines.push(`- "${a.query}" (${a.type})`);
+    for (const a of unresolved) lines.push(`- "${a.query}" (${a.type})`);
   }
   if (confirmed.length > 0) {
-    lines.push("", "Pre-confirmed anchors:");
+    lines.push(
+      "",
+      "Pre-confirmed anchors (already resolved — use their entity IDs directly in discover_places):",
+    );
     for (const c of confirmed) lines.push(`- ${c.name} (${c.entityId})`);
   }
   return lines.join("\n");
@@ -249,16 +295,23 @@ function buildInitialMessage(
   anchors: AnchorSpec[],
   confirmed: ConfirmedAnchor[],
 ): string {
+  const unresolved = getUnresolvedAnchors(anchors, confirmed);
   const lines = [`Discover places in ${city} for a newcomer.`];
-  if (anchors.length > 0) {
+  if (unresolved.length > 0) {
     lines.push("", "Resolve these taste anchors:");
-    for (const a of anchors) lines.push(`- "${a.query}" (${a.type})`);
+    for (const a of unresolved) lines.push(`- "${a.query}" (${a.type})`);
   }
   if (confirmed.length > 0) {
-    lines.push("", "Pre-confirmed anchors:");
+    lines.push(
+      "",
+      "Pre-confirmed anchors (already resolved — use their entity IDs directly in discover_places):",
+    );
     for (const c of confirmed) lines.push(`- ${c.name} (${c.entityId})`);
   }
-  lines.push("", "Discover places and finalize with your top recommendations.");
+  lines.push(
+    "",
+    "Discover places and finalize with up to 8 top accepted recommendation IDs.",
+  );
   return lines.join("\n");
 }
 
@@ -975,7 +1028,7 @@ export async function runAgent(
       ],
     },
   ];
-  const toolConfig = { tools: ALL_TOOL_SPECS };
+  const toolConfig = { tools: ALL_TOOL_SPECS, toolChoice: { any: {} } };
 
   function emit(event: Omit<TraceEvent, "id">): void {
     trace.push({ id: nextEventId++, ...event });
@@ -1008,10 +1061,12 @@ export async function runAgent(
     // ── Bedrock Converse call ──
     let output: ConverseOutput;
     const t0 = Date.now();
+    const callBudgetMs = Math.min(opTimeout, remaining());
+    const clampedByRunDeadline = callBudgetMs < opTimeout;
     try {
       output = await withTimeout(
         (opSignal) => deps.converse({ system: systemPrompt, messages, tools: toolConfig, signal: opSignal }),
-        Math.min(opTimeout, remaining()),
+        callBudgetMs,
         "bedrock_converse",
         signal,
       );
@@ -1028,7 +1083,7 @@ export async function runAgent(
     } catch (err) {
       const isTimeout = err instanceof OperationTimeoutError;
       terminationReason = isTimeout
-        ? (isTimedOut() ? "total_timeout" : "model_error")
+        ? (isTimedOut() || clampedByRunDeadline ? "total_timeout" : "model_error")
         : "model_error";
       emit({
         timestamp: new Date(t0).toISOString(),
@@ -1426,11 +1481,12 @@ export async function runAgent(
             }
           }
 
+          const compactForModel = compactDiscoverResultForModel(bestResult);
           toolResults.push({
             toolUseId: tuId,
             result: fallbackUsedHere
               ? {
-                  ...bestResult,
+                  ...compactForModel,
                   fallbackApplied: {
                     originalTagId: dpInput.category_tag_id,
                     stagesAttempted: fallbackTracker
@@ -1438,7 +1494,7 @@ export async function runAgent(
                       ?.attempts.map((a) => a.stage) ?? [],
                   },
                 }
-              : bestResult,
+              : compactForModel,
             isError: false,
           });
           continue;

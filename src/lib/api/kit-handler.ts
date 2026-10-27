@@ -606,9 +606,14 @@ async function handleKitRequestInner(
   requestAc.signal.addEventListener("abort", onRequestAbortForAgent, { once: true });
   if (requestAc.signal.aborted) agentAc.abort();
 
+  let agentTimedOut = false;
   try {
-    const agentTimer = setTimeout(() => agentAc.abort(), timeoutMs);
+    const agentTimer = setTimeout(() => {
+      agentTimedOut = true;
+      agentAc.abort();
+    }, timeoutMs);
 
+    let abortGraceTimer: ReturnType<typeof setTimeout> | undefined;
     const result = await Promise.race([
       agentRunner(
         {
@@ -621,12 +626,22 @@ async function handleKitRequestInner(
         agentAc.signal,
       ),
       new Promise<never>((_, reject) => {
-        agentAc.signal.addEventListener("abort", () =>
-          reject(new Error("Agent timeout")),
+        agentAc.signal.addEventListener(
+          "abort",
+          () => {
+            // Allow 10ms for signal-aware runAgent to resolve its trace before forcing rejection
+            abortGraceTimer = setTimeout(
+              () => reject(new Error("Agent timeout")),
+              10,
+            );
+          },
           { once: true },
         );
       }),
-    ]).finally(() => clearTimeout(agentTimer));
+    ]).finally(() => {
+      clearTimeout(agentTimer);
+      if (abortGraceTimer !== undefined) clearTimeout(abortGraceTimer);
+    });
 
     runId = result.runId;
     agentTraceEvents = Array.isArray(result.trace) ? result.trace : [];
@@ -780,6 +795,9 @@ async function handleKitRequestInner(
           }),
         },
       };
+    }
+    if (agentTimedOut && !agentTerminationReason) {
+      agentTerminationReason = "total_timeout";
     }
     mode = "deterministic";
   } finally {

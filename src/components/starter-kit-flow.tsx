@@ -1,7 +1,7 @@
 "use client";
 
 import dynamic from "next/dynamic";
-import { useId, useMemo, useRef, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
 import type { FormEvent } from "react";
 import type { AnchorSearchResponse } from "@/lib/api";
 import {
@@ -29,7 +29,6 @@ import {
   formatRecommendationProvenance,
   getKitStatusPresentation,
   getLabelPresentation,
-  getPresetById,
   groupRecommendationsByCategory,
   removeAnchor,
   resolveSelectionState,
@@ -58,9 +57,9 @@ const ResultsMap = dynamic(() => import("./results-map"), {
     <div
       role="status"
       aria-live="polite"
-      className="flex h-60 w-full items-center justify-center rounded-lg border border-foreground/15 bg-foreground/[0.02] p-6 text-xs text-foreground/60 sm:h-72 lg:h-80"
+      className="flex h-64 w-full items-center justify-center rounded-lg border border-cb-border bg-cb-surface text-sm text-cb-muted sm:h-80 lg:h-96"
     >
-      Loading OpenStreetMap view…
+      Loading map…
     </div>
   ),
 });
@@ -70,53 +69,52 @@ const FLOW_PHASE_LABELS: Record<
   { badge: string; instruction: string }
 > = {
   initial_profile: {
-    badge: "Profile selected",
+    badge: "Getting started",
     instruction:
-      "Search Qloo for your profile's anchors and confirm each entity before generating.",
+      "Find matches for your interests below, then confirm each one is correct.",
   },
   editing_anchors: {
-    badge: "Editing anchors",
+    badge: "Adding interests",
     instruction:
-      "Add up to five cultural anchors, then search and confirm each match in Qloo.",
+      "Add up to five interests, then find and confirm matches for each.",
   },
   searching_matches: {
-    badge: "Searching Qloo",
-    instruction: "Looking up candidate entities in Qloo's taste graph…",
+    badge: "Searching",
+    instruction: "Looking for matches…",
   },
   waiting_for_confirmation: {
-    badge: "Confirmation needed",
+    badge: "Pick the right matches",
     instruction:
-      "Select the exact Qloo entity for each anchor below. Matches are never auto-confirmed.",
+      "We found possible matches — pick the correct one for each interest.",
   },
   lookup_failure: {
-    badge: "Action needed",
+    badge: "Needs attention",
     instruction:
-      "One or more anchors could not be resolved. Edit the query, retry, or remove the anchor to continue.",
+      "Some interests couldn't be matched. Edit, retry, or remove them to continue.",
   },
   ready_to_generate: {
-    badge: "Ready to generate",
+    badge: "Ready",
     instruction:
-      "All active anchors are confirmed. Generate your Cultural Starter Kit when ready.",
+      "All your interests are confirmed. Build your guide when you're ready.",
   },
   generating: {
-    badge: "Generating kit",
-    instruction:
-      "Verifying anchors and discovering places grounded in your cultural profile…",
+    badge: "Building your guide",
+    instruction: "Finding places that match your taste…",
   },
   success: {
-    badge: "Starter Kit ready",
+    badge: "Your guide is ready",
     instruction:
-      "Review your recommendations, map pins, and search process below, or edit your anchors to revise the kit.",
+      "Explore your recommendations below, or edit your interests to get a different set.",
   },
   empty_recommendations: {
-    badge: "No matches found",
+    badge: "No places found",
     instruction:
-      "No places met the deterministic screening criteria for this combination. Try adjusting your anchors or destination.",
+      "No places met our quality checks for this combination. Try different interests or a different city.",
   },
   generation_error: {
-    badge: "Generation failed",
+    badge: "Something went wrong",
     instruction:
-      "Your profile, destination city, and confirmed anchors are preserved. Retry whenever you are ready.",
+      "Your city and confirmed interests are saved. You can try again whenever you're ready.",
   },
 };
 
@@ -128,19 +126,17 @@ export function StarterKitFlow() {
   const [newType, setNewType] =
     useState<SupportedAnchorType>("urn:entity:artist");
   const [isErrorTraceOpen, setIsErrorTraceOpen] = useState<boolean>(false);
+  const [view, setView] = useState<"setup" | "results">("setup");
 
-  // Synchronous lock to prevent accidental duplicate /api/kit submissions
   const kitSubmittingRef = useRef<boolean>(false);
   const stateRef = useRef<FlowState>(state);
   stateRef.current = state;
 
   const anchorsSectionRef = useRef<HTMLElement | null>(null);
-  const resultsSectionRef = useRef<HTMLElement | null>(null);
 
   const baseId = useId();
   const phase = deriveFlowPhase(state);
   const phaseMeta = FLOW_PHASE_LABELS[phase];
-  const currentPreset = getPresetById(state.selectedPresetId);
   const isGenerating = state.generation.status === "loading";
 
   const confirmedCount = state.anchors.filter(
@@ -150,6 +146,20 @@ export function StarterKitFlow() {
     (a) => a.status === "unsearched",
   );
   const isReady = canGenerateKit(state);
+
+  // Transition to results view when generation produces a response
+  useEffect(() => {
+    const s = state.generation.status;
+    if (s === "success" || s === "partial" || s === "empty") {
+      setView("results");
+      window.scrollTo({ top: 0, behavior: "smooth" });
+    }
+  }, [state.generation.status]);
+
+  function handleEditInterests() {
+    setView("setup");
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  }
 
   function focusAnchorsEditor() {
     anchorsSectionRef.current?.scrollIntoView({
@@ -320,7 +330,7 @@ export function StarterKitFlow() {
     const payload = buildKitRequestPayload(current);
     if (!payload) {
       setFormError(
-        "Confirm or remove all pending anchors before generating your starter kit.",
+        "Confirm or remove all pending interests before building your guide.",
       );
       return;
     }
@@ -353,78 +363,73 @@ export function StarterKitFlow() {
 
   return (
     <div className="min-h-screen bg-background text-foreground">
-      {/* Persistent Top Workspace Bar */}
-      <header className="sticky top-0 z-20 border-b border-foreground/10 bg-background/95 backdrop-blur">
-        <div className="mx-auto flex max-w-5xl flex-wrap items-center justify-between gap-3 px-4 py-3.5 sm:px-6">
-          <div className="flex items-center gap-3">
-            <h1 className="text-base font-semibold tracking-tight">
-              CultureBridge
-            </h1>
-            <span
-              className="hidden h-3.5 w-px bg-foreground/15 sm:inline-block"
-              aria-hidden="true"
-            />
-            <span className="hidden text-xs text-foreground/60 sm:inline">
-              Cultural Starter Kit
-            </span>
-          </div>
-
-          <div className="flex items-center gap-2.5 text-xs">
-            <span className="rounded border border-foreground/15 bg-foreground/[0.03] px-2 py-1 font-mono text-foreground/80">
-              Destination:{" "}
-              <strong className="font-semibold">{state.city}</strong>
-            </span>
-            <span
-              role="status"
-              aria-live="polite"
-              className="rounded border border-foreground/10 px-2 py-1 font-mono text-foreground/65"
-            >
-              {confirmedCount}/{state.anchors.length} confirmed
-            </span>
+      {/* Header */}
+      <header className="sticky top-0 z-20 border-b border-cb-border bg-background/95 backdrop-blur-sm">
+        <div className="mx-auto flex max-w-5xl items-center justify-between px-5 py-3.5 sm:px-8">
+          <span className="text-lg font-semibold tracking-tight">
+            CultureBridge
+          </span>
+          <div className="flex items-center gap-3 text-sm text-cb-muted">
+            <span>{state.city}</span>
+            {view === "setup" && state.anchors.length > 0 && (
+              <>
+                <span className="text-cb-border" aria-hidden="true">|</span>
+                <span>
+                  {confirmedCount} of {state.anchors.length} confirmed
+                </span>
+              </>
+            )}
+            {view === "results" && (
+              <button
+                type="button"
+                onClick={handleEditInterests}
+                className="rounded-lg border border-cb-border px-3 py-1 text-xs font-medium text-foreground hover:bg-cb-surface focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-cb-accent"
+              >
+                Edit interests
+              </button>
+            )}
           </div>
         </div>
       </header>
 
-      <main className="mx-auto max-w-5xl space-y-8 px-4 py-6 sm:px-6 sm:py-10">
-        {/* Input Workspace Container */}
-        <div className="mx-auto max-w-3xl space-y-8">
-          {/* Intro & Live Workflow Status Banner */}
-          <section aria-label="Workflow overview" className="space-y-3">
-            <div className="flex flex-col gap-1 sm:flex-row sm:items-baseline sm:justify-between">
-              <h2 className="text-xl font-semibold tracking-tight sm:text-2xl">
-                Discover places in {state.city} through what you already know
-              </h2>
-              <span className="inline-flex w-fit items-center gap-1.5 rounded border border-foreground/15 px-2 py-0.5 font-mono text-xs text-foreground/70">
-                <PhaseIndicatorDot phase={phase} />
-                {phaseMeta.badge}
-              </span>
-            </div>
-            <p className="text-sm text-foreground/65" aria-live="polite">
+      <main className="mx-auto max-w-5xl px-5 py-8 sm:px-8 sm:py-12">
+        {/* Setup workspace — only shown before generation */}
+        {view === "setup" && (
+        <div className="mx-auto max-w-2xl space-y-10">
+          {/* Hero introduction */}
+          <section aria-label="Introduction" className="space-y-2">
+            <h1 className="text-3xl font-semibold tracking-tight sm:text-4xl">
+              Discover {state.city} through what you already love
+            </h1>
+            <p className="max-w-lg text-base text-cb-muted">
+              Tell us about your favorite artists, shows, films, and brands.
+              We&rsquo;ll find places that match your taste.
+            </p>
+            <p
+              className="text-sm text-cb-muted"
+              role="status"
+              aria-live="polite"
+            >
               {phaseMeta.instruction}
             </p>
           </section>
 
-          {/* Step 1: Destination City Selector */}
+          {/* City selector */}
           <section
             aria-labelledby={`${baseId}-city-heading`}
             className="space-y-3"
           >
-            <div className="flex items-baseline justify-between">
-              <h3
-                id={`${baseId}-city-heading`}
-                className="text-sm font-medium text-foreground"
-              >
-                1. Destination city
-              </h3>
-              <span className="text-xs text-foreground/50">
-                Tested Qloo locality coverage
-              </span>
-            </div>
+            <h2
+              id={`${baseId}-city-heading`}
+              className="text-base font-semibold"
+            >
+              Where are you headed?
+            </h2>
 
             <div
               role="group"
               aria-labelledby={`${baseId}-city-heading`}
-              className="grid grid-cols-1 gap-2.5 sm:grid-cols-2"
+              className="grid grid-cols-2 gap-3"
             >
               {TESTED_CITIES.map((cityOption) => {
                 const selected = state.city === cityOption;
@@ -436,29 +441,29 @@ export function StarterKitFlow() {
                     aria-pressed={selected}
                     disabled={isGenerating}
                     onClick={() => handleSelectCity(cityOption)}
-                    className={`flex flex-col items-start rounded-lg border p-3.5 text-left transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-foreground disabled:cursor-not-allowed disabled:opacity-50 ${
+                    className={`flex flex-col items-start rounded-lg border p-4 text-left transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-cb-accent disabled:cursor-not-allowed disabled:opacity-50 ${
                       selected
-                        ? "border-foreground bg-foreground/[0.04]"
-                        : "border-foreground/12 hover:border-foreground/30 hover:bg-foreground/[0.015]"
+                        ? "border-cb-accent bg-cb-accent-soft"
+                        : "border-cb-border hover:border-foreground/30 hover:bg-cb-surface"
                     }`}
                   >
-                    <div className="flex w-full items-center justify-between gap-2">
+                    <div className="flex w-full items-center justify-between">
                       <span className="text-sm font-semibold">
-                        {meta.name}{" "}
-                        <span className="font-normal text-foreground/50">
-                          · {meta.country}
-                        </span>
+                        {meta.name}
                       </span>
                       <span
-                        className={`h-2 w-2 rounded-full ${
+                        className={`h-2.5 w-2.5 rounded-full border-2 transition-colors ${
                           selected
-                            ? "bg-foreground"
-                            : "border border-foreground/30"
+                            ? "border-cb-accent bg-cb-accent"
+                            : "border-cb-border bg-transparent"
                         }`}
                         aria-hidden="true"
                       />
                     </div>
-                    <p className="mt-1 text-xs text-foreground/60">
+                    <span className="mt-0.5 text-sm text-cb-muted">
+                      {meta.country}
+                    </span>
+                    <p className="mt-1.5 text-xs text-cb-muted leading-relaxed">
                       {meta.note}
                     </p>
                   </button>
@@ -467,27 +472,22 @@ export function StarterKitFlow() {
             </div>
           </section>
 
-          {/* Step 2: Persona Preset Selector */}
+          {/* Profile selector */}
           <section
             aria-labelledby={`${baseId}-persona-heading`}
             className="space-y-3"
           >
-            <div className="flex items-baseline justify-between">
-              <h3
-                id={`${baseId}-persona-heading`}
-                className="text-sm font-medium text-foreground"
-              >
-                2. Starting taste profile
-              </h3>
-              <span className="text-xs text-foreground/50">
-                Select a preset or build a custom list
-              </span>
-            </div>
+            <h2
+              id={`${baseId}-persona-heading`}
+              className="text-base font-semibold"
+            >
+              Start with a taste profile
+            </h2>
 
             <div
               role="group"
               aria-labelledby={`${baseId}-persona-heading`}
-              className="grid grid-cols-1 gap-2 sm:grid-cols-2"
+              className="grid grid-cols-1 gap-2.5 sm:grid-cols-2"
             >
               {PERSONA_PRESETS.map((preset) => {
                 const selected = state.selectedPresetId === preset.id;
@@ -498,27 +498,23 @@ export function StarterKitFlow() {
                     aria-pressed={selected}
                     disabled={isGenerating}
                     onClick={() => handleSelectPreset(preset.id)}
-                    className={`flex flex-col items-start rounded-lg border p-3.5 text-left transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-foreground disabled:cursor-not-allowed disabled:opacity-50 ${
+                    className={`flex flex-col items-start rounded-lg border p-4 text-left transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-cb-accent disabled:cursor-not-allowed disabled:opacity-50 ${
                       selected
-                        ? "border-foreground bg-foreground/[0.04]"
-                        : "border-foreground/12 hover:border-foreground/30 hover:bg-foreground/[0.015]"
+                        ? "border-cb-accent bg-cb-accent-soft"
+                        : "border-cb-border hover:border-foreground/30 hover:bg-cb-surface"
                     }`}
                   >
-                    <div className="flex w-full items-center justify-between gap-2">
+                    <div className="flex w-full items-center justify-between">
                       <span className="text-sm font-semibold">
                         {preset.name}
                       </span>
-                      {preset.anchors.length > 0 ? (
-                        <span className="font-mono text-xs text-foreground/50">
-                          {preset.anchors.length} anchors
-                        </span>
-                      ) : (
-                        <span className="font-mono text-xs text-foreground/50">
-                          Blank
-                        </span>
-                      )}
+                      <span className="text-xs text-cb-muted">
+                        {preset.anchors.length > 0
+                          ? `${preset.anchors.length} interests`
+                          : "Blank"}
+                      </span>
                     </div>
-                    <p className="mt-1 text-xs text-foreground/60">
+                    <p className="mt-1.5 text-xs text-cb-muted leading-relaxed">
                       {preset.description}
                     </p>
                   </button>
@@ -527,7 +523,7 @@ export function StarterKitFlow() {
             </div>
           </section>
 
-          {/* Step 3: Cultural Anchors & Explicit Qloo Entity Confirmation */}
+          {/* Interests editor */}
           <section
             ref={anchorsSectionRef}
             aria-labelledby={`${baseId}-anchors-heading`}
@@ -535,30 +531,30 @@ export function StarterKitFlow() {
           >
             <div className="flex flex-wrap items-center justify-between gap-2">
               <div>
-                <h3
+                <h2
                   id={`${baseId}-anchors-heading`}
-                  className="text-sm font-medium text-foreground"
+                  className="text-base font-semibold"
                 >
-                  3. Cultural anchors &amp; Qloo entity confirmation
-                </h3>
-                <p className="mt-0.5 text-xs text-foreground/60">
-                  Up to {MAX_TRUSTED_ANCHORS} anchors. Every anchor is searched
-                  against Qloo and requires your explicit confirmation.
+                  Your interests
+                </h2>
+                <p className="mt-0.5 text-sm text-cb-muted">
+                  We&rsquo;ll match each one to make sure we find the right
+                  thing.
                 </p>
               </div>
 
-              <div className="flex flex-wrap items-center gap-2">
+              <div className="flex items-center gap-2">
                 {unsearchedAnchors.length > 0 && (
                   <button
                     type="button"
                     disabled={isGenerating}
                     onClick={lookupAllUnsearched}
-                    className="rounded-md bg-foreground px-3 py-1.5 text-xs font-medium text-background transition-opacity hover:opacity-90 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-foreground disabled:cursor-not-allowed disabled:opacity-50"
+                    className="rounded-lg bg-cb-accent px-3.5 py-2 text-sm font-medium text-cb-accent-fg transition-opacity hover:opacity-90 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-cb-accent disabled:cursor-not-allowed disabled:opacity-50"
                   >
-                    Search Qloo for{" "}
+                    Find matches for{" "}
                     {unsearchedAnchors.length === 1
-                      ? "1 unsearched anchor"
-                      : `all ${unsearchedAnchors.length} anchors`}
+                      ? "1 interest"
+                      : `all ${unsearchedAnchors.length}`}
                   </button>
                 )}
 
@@ -571,10 +567,9 @@ export function StarterKitFlow() {
                         setFormError(null);
                         setIsAddRowOpen(true);
                       }}
-                      className="rounded-md border border-foreground/20 px-3 py-1.5 text-xs font-medium text-foreground transition-colors hover:bg-foreground/[0.04] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-foreground disabled:cursor-not-allowed disabled:opacity-50"
+                      className="rounded-lg border border-cb-border px-3.5 py-2 text-sm font-medium text-foreground transition-colors hover:bg-cb-surface focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-cb-accent disabled:cursor-not-allowed disabled:opacity-50"
                     >
-                      + Add anchor ({state.anchors.length}/{MAX_TRUSTED_ANCHORS}
-                      )
+                      Add another
                     </button>
                   )}
               </div>
@@ -583,30 +578,30 @@ export function StarterKitFlow() {
             {formError && (
               <div
                 role="alert"
-                className="rounded-md border border-red-500/30 bg-red-500/5 px-3.5 py-2.5 text-xs text-red-700 dark:text-red-300"
+                className="rounded-lg border border-cb-error/30 bg-cb-error-soft px-4 py-3 text-sm text-cb-error"
               >
                 {formError}
               </div>
             )}
 
-            {/* Anchor Rows */}
-            <div className="divide-y divide-foreground/10 rounded-lg border border-foreground/15">
+            {/* Interest rows */}
+            <div className="divide-y divide-cb-border rounded-lg border border-cb-border">
               {state.anchors.length === 0 && !isAddRowOpen && (
-                <div className="p-6 text-center">
-                  <p className="text-sm font-medium text-foreground/80">
-                    No cultural anchors in {currentPreset.name}
+                <div className="p-8 text-center">
+                  <p className="text-sm font-medium text-foreground">
+                    No interests yet
                   </p>
-                  <p className="mt-1 text-xs text-foreground/55">
-                    Add at least one artist, TV show, movie, brand, or person to
-                    discover connected places in {state.city}.
+                  <p className="mt-1 text-sm text-cb-muted">
+                    Add an artist, TV show, movie, brand, or person to discover
+                    places in {state.city}.
                   </p>
                   <button
                     type="button"
                     disabled={isGenerating}
                     onClick={() => setIsAddRowOpen(true)}
-                    className="mt-3 rounded-md bg-foreground px-3.5 py-1.5 text-xs font-medium text-background transition-opacity hover:opacity-90"
+                    className="mt-4 rounded-lg bg-cb-accent px-4 py-2 text-sm font-medium text-cb-accent-fg transition-opacity hover:opacity-90"
                   >
-                    Add your first anchor
+                    Add your first interest
                   </button>
                 </div>
               )}
@@ -636,15 +631,15 @@ export function StarterKitFlow() {
                 />
               ))}
 
-              {/* Inline Add Anchor Form */}
+              {/* Add interest form */}
               {isAddRowOpen && state.anchors.length < MAX_TRUSTED_ANCHORS && (
                 <form
                   onSubmit={handleAddAnchorSubmit}
-                  className="bg-foreground/[0.015] p-4"
+                  className="bg-cb-surface/50 p-4"
                 >
-                  <div className="mb-2.5 flex items-center justify-between">
-                    <span className="text-xs font-medium text-foreground/80">
-                      Add cultural anchor ({state.anchors.length + 1} of{" "}
+                  <div className="mb-3 flex items-center justify-between">
+                    <span className="text-sm font-medium text-cb-muted">
+                      Add interest ({state.anchors.length + 1} of{" "}
                       {MAX_TRUSTED_ANCHORS})
                     </span>
                     {state.anchors.length > 0 && (
@@ -654,7 +649,7 @@ export function StarterKitFlow() {
                           setIsAddRowOpen(false);
                           setFormError(null);
                         }}
-                        className="text-xs text-foreground/50 hover:text-foreground/80"
+                        className="text-sm text-cb-muted hover:text-foreground"
                       >
                         Cancel
                       </button>
@@ -667,7 +662,7 @@ export function StarterKitFlow() {
                         htmlFor={`${baseId}-new-anchor-query`}
                         className="sr-only"
                       >
-                        Anchor name
+                        Name
                       </label>
                       <input
                         id={`${baseId}-new-anchor-query`}
@@ -677,16 +672,16 @@ export function StarterKitFlow() {
                         placeholder={ANCHOR_TYPE_META[newType].placeholder}
                         maxLength={200}
                         disabled={isGenerating}
-                        className="w-full rounded-md border border-foreground/20 bg-background px-3 py-2 text-sm text-foreground placeholder:text-foreground/40 focus:border-foreground focus:outline-none"
+                        className="w-full rounded-lg border border-cb-border bg-background px-3.5 py-2.5 text-sm text-foreground placeholder:text-cb-muted focus:border-cb-accent focus:outline-none focus:ring-1 focus:ring-cb-accent"
                       />
                     </div>
 
-                    <div className="sm:w-40">
+                    <div className="sm:w-36">
                       <label
                         htmlFor={`${baseId}-new-anchor-type`}
                         className="sr-only"
                       >
-                        Entity type
+                        Type
                       </label>
                       <select
                         id={`${baseId}-new-anchor-type`}
@@ -695,7 +690,7 @@ export function StarterKitFlow() {
                           setNewType(e.target.value as SupportedAnchorType)
                         }
                         disabled={isGenerating}
-                        className="w-full rounded-md border border-foreground/20 bg-background px-3 py-2 text-sm text-foreground focus:border-foreground focus:outline-none"
+                        className="w-full rounded-lg border border-cb-border bg-background px-3 py-2.5 text-sm text-foreground focus:border-cb-accent focus:outline-none focus:ring-1 focus:ring-cb-accent"
                       >
                         {SUPPORTED_ANCHOR_TYPES.map((typeOption) => (
                           <option key={typeOption} value={typeOption}>
@@ -708,9 +703,9 @@ export function StarterKitFlow() {
                     <button
                       type="submit"
                       disabled={isGenerating || newQuery.trim().length === 0}
-                      className="rounded-md bg-foreground px-4 py-2 text-xs font-medium text-background transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
+                      className="rounded-lg bg-cb-accent px-4 py-2.5 text-sm font-medium text-cb-accent-fg transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
                     >
-                      Search Qloo
+                      Find matches
                     </button>
                   </div>
                 </form>
@@ -718,28 +713,25 @@ export function StarterKitFlow() {
             </div>
           </section>
 
-          {/* Step 4: Generate Starter Kit Action Panel */}
+          {/* Generate action */}
           <section
-            aria-label="Generate Cultural Starter Kit"
-            className="rounded-lg border border-foreground/15 bg-foreground/[0.02] p-4 sm:p-5"
+            aria-label="Build city guide"
+            className="rounded-lg border border-cb-border bg-cb-surface/50 p-5"
           >
             <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
               <div className="space-y-1">
-                <div className="flex flex-wrap items-center gap-2 text-sm font-medium">
-                  <span>Destination: {state.city}</span>
-                  <span className="text-foreground/30">·</span>
-                  <span className="font-mono text-xs text-foreground/70">
-                    {confirmedCount} of {state.anchors.length} confirmed
-                  </span>
-                </div>
-                <p className="text-xs text-foreground/60">
+                <p className="text-sm font-medium">
+                  {state.city} guide with {confirmedCount} of{" "}
+                  {state.anchors.length} interests confirmed
+                </p>
+                <p className="text-sm text-cb-muted">
                   {isGenerating
-                    ? `Querying Qloo and verifying recommendations for ${state.city}…`
+                    ? `Finding places in ${state.city} that match your taste…`
                     : isReady
-                      ? `Ready to generate your ${state.city} Cultural Starter Kit with ${confirmedCount} confirmed ${confirmedCount === 1 ? "anchor" : "anchors"}.`
+                      ? "Ready to build your guide."
                       : state.anchors.length === 0
-                        ? "Add and confirm at least one cultural anchor to enable generation."
-                        : "Search and explicitly confirm every anchor in your list (or remove unconfirmed ones) before generating."}
+                        ? "Add and confirm at least one interest to get started."
+                        : "Find matches and confirm every interest first, or remove ones you don't need."}
                 </p>
               </div>
 
@@ -747,59 +739,57 @@ export function StarterKitFlow() {
                 type="button"
                 onClick={handleGenerateKit}
                 disabled={!isReady || isGenerating}
-                className="inline-flex shrink-0 items-center justify-center gap-2 rounded-md bg-foreground px-5 py-2.5 text-sm font-medium text-background transition-opacity hover:opacity-90 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-foreground disabled:cursor-not-allowed disabled:opacity-40"
+                className="inline-flex shrink-0 items-center justify-center gap-2.5 rounded-lg bg-cb-accent px-6 py-3 text-sm font-semibold text-cb-accent-fg transition-opacity hover:opacity-90 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-cb-accent disabled:cursor-not-allowed disabled:opacity-40"
               >
                 {isGenerating && (
                   <span
-                    className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-background/30 border-t-background"
+                    className="h-4 w-4 animate-spin rounded-full border-2 border-cb-accent-fg/30 border-t-cb-accent-fg"
                     aria-hidden="true"
                   />
                 )}
                 {isGenerating
-                  ? `Generating for ${state.city}…`
-                  : `Generate ${state.city} Starter Kit`}
+                  ? "Building your guide…"
+                  : `Build my ${state.city} guide`}
               </button>
             </div>
           </section>
 
-          {/* Generation Error State — never retains stale results */}
+          {/* Error state */}
           {state.generation.status === "error" && (
             <section
               role="alert"
-              aria-label="Starter kit generation error"
-              className="space-y-4 rounded-lg border border-red-500/30 bg-red-500/5 p-5"
+              aria-label="Generation error"
+              className="space-y-4 rounded-lg border border-cb-error/30 bg-cb-error-soft p-5"
             >
               <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                 <div>
-                  <h3 className="text-sm font-semibold text-red-700 dark:text-red-300">
-                    Starter Kit generation could not complete
+                  <h3 className="text-sm font-semibold text-cb-error">
+                    Couldn&rsquo;t build your guide
                   </h3>
-                  <p className="mt-1 text-xs text-foreground/75">
+                  <p className="mt-1 text-sm text-foreground/80">
                     {state.generation.errorMessage ??
-                      "An unexpected error occurred while generating your kit."}
+                      "An unexpected error occurred."}
                   </p>
-                  <p className="mt-1 text-xs text-foreground/55">
-                    Your selected destination ({state.city}) and{" "}
-                    {confirmedCount} confirmed{" "}
-                    {confirmedCount === 1 ? "anchor" : "anchors"} are preserved.
-                    No stale or unverified results are shown.
+                  <p className="mt-1 text-sm text-cb-muted">
+                    Your city ({state.city}) and {confirmedCount} confirmed{" "}
+                    {confirmedCount === 1 ? "interest" : "interests"} are saved.
                   </p>
                 </div>
-                <div className="flex shrink-0 flex-wrap items-center gap-2">
+                <div className="flex shrink-0 items-center gap-2">
                   <button
                     type="button"
                     onClick={focusAnchorsEditor}
-                    className="rounded-md border border-foreground/20 bg-background px-3.5 py-2 text-xs font-medium text-foreground transition-colors hover:bg-foreground/[0.04]"
+                    className="rounded-lg border border-cb-border bg-background px-4 py-2 text-sm font-medium text-foreground hover:bg-cb-surface"
                   >
-                    Edit anchors
+                    Edit interests
                   </button>
                   <button
                     type="button"
                     onClick={handleGenerateKit}
                     disabled={!isReady || isGenerating}
-                    className="rounded-md bg-foreground px-4 py-2 text-xs font-medium text-background transition-opacity hover:opacity-90 disabled:opacity-40"
+                    className="rounded-lg bg-cb-accent px-4 py-2 text-sm font-medium text-cb-accent-fg hover:opacity-90 disabled:opacity-40"
                   >
-                    Retry generation
+                    Try again
                   </button>
                 </div>
               </div>
@@ -814,13 +804,13 @@ export function StarterKitFlow() {
             </section>
           )}
         </div>
+        )} {/* end setup view */}
 
-        {/* Full Cultural Starter Kit Results, Map, and Agent Trace */}
-        {state.generation.result && (
+        {/* Results view — shown after successful generation */}
+        {view === "results" && state.generation.result && (
           <section
-            ref={resultsSectionRef}
-            aria-label="Cultural Starter Kit results"
-            className="scroll-mt-20 border-t border-foreground/15 pt-8"
+            aria-label="Your city guide"
+            className="scroll-mt-4"
           >
             <StarterKitResultsView
               key={`${state.generation.result.city}-${state.generation.result.status}-${state.generation.result.mode}-${state.generation.result.recommendations.map((r) => r.entityId).join(",")}`}
@@ -830,7 +820,7 @@ export function StarterKitFlow() {
                 .filter((a) => a.status === "confirmed" && a.confirmedEntity)
                 .map((a) => a.confirmedEntity!.name)}
               onRegenerate={handleGenerateKit}
-              onEditAnchors={focusAnchorsEditor}
+              onEditAnchors={handleEditInterests}
               isGenerating={isGenerating}
             />
           </section>
@@ -842,22 +832,19 @@ export function StarterKitFlow() {
 
 // ── Sub-components ───────────────────────────────────────────
 
-function PhaseIndicatorDot({ phase }: { phase: FlowPhase }) {
-  const colorClass =
-    phase === "ready_to_generate" || phase === "success"
-      ? "bg-emerald-500"
-      : phase === "lookup_failure" || phase === "generation_error"
-        ? "bg-red-500"
-        : phase === "waiting_for_confirmation" ||
-            phase === "empty_recommendations"
-          ? "bg-amber-500"
-          : phase === "searching_matches" || phase === "generating"
-            ? "bg-foreground animate-pulse"
-            : "bg-foreground/40";
+function StatusDot({ status }: { status: AnchorItem["status"] }) {
+  const cls = {
+    unsearched: "bg-cb-border",
+    searching: "bg-foreground animate-pulse",
+    candidates: "bg-cb-warning",
+    confirmed: "bg-cb-confirmed",
+    no_matches: "bg-cb-warning",
+    lookup_error: "bg-cb-error",
+  }[status];
 
   return (
     <span
-      className={`inline-block h-1.5 w-1.5 rounded-full ${colorClass}`}
+      className={`inline-block h-2 w-2 shrink-0 rounded-full ${cls}`}
       aria-hidden="true"
     />
   );
@@ -905,13 +892,13 @@ function AnchorRow({
     return (
       <form onSubmit={handleEditSubmit} className="space-y-3 p-4">
         <div className="flex items-center justify-between">
-          <span className="text-xs font-medium text-foreground/70">
-            Edit cultural anchor
+          <span className="text-sm font-medium text-cb-muted">
+            Edit interest
           </span>
           <button
             type="button"
             onClick={onCancelEdit}
-            className="text-xs text-foreground/50 hover:text-foreground/80"
+            className="text-sm text-cb-muted hover:text-foreground"
           >
             Cancel
           </button>
@@ -920,7 +907,7 @@ function AnchorRow({
         <div className="flex flex-col gap-2.5 sm:flex-row">
           <div className="flex-1">
             <label htmlFor={`${rowId}-query`} className="sr-only">
-              Anchor query
+              Name
             </label>
             <input
               id={`${rowId}-query`}
@@ -929,13 +916,13 @@ function AnchorRow({
               onChange={(e) => setEditQuery(e.target.value)}
               maxLength={200}
               disabled={disabled}
-              className="w-full rounded-md border border-foreground/20 bg-background px-3 py-1.5 text-sm text-foreground focus:border-foreground focus:outline-none"
+              className="w-full rounded-lg border border-cb-border bg-background px-3.5 py-2 text-sm text-foreground focus:border-cb-accent focus:outline-none focus:ring-1 focus:ring-cb-accent"
             />
           </div>
 
-          <div className="sm:w-40">
+          <div className="sm:w-36">
             <label htmlFor={`${rowId}-type`} className="sr-only">
-              Entity type
+              Type
             </label>
             <select
               id={`${rowId}-type`}
@@ -944,7 +931,7 @@ function AnchorRow({
                 setEditType(e.target.value as SupportedAnchorType)
               }
               disabled={disabled}
-              className="w-full rounded-md border border-foreground/20 bg-background px-3 py-1.5 text-sm text-foreground focus:border-foreground focus:outline-none"
+              className="w-full rounded-lg border border-cb-border bg-background px-3 py-2 text-sm text-foreground focus:border-cb-accent focus:outline-none focus:ring-1 focus:ring-cb-accent"
             >
               {SUPPORTED_ANCHOR_TYPES.map((t) => (
                 <option key={t} value={t}>
@@ -957,9 +944,9 @@ function AnchorRow({
           <button
             type="submit"
             disabled={disabled || editQuery.trim().length === 0}
-            className="rounded-md bg-foreground px-3.5 py-1.5 text-xs font-medium text-background hover:opacity-90 disabled:opacity-40"
+            className="rounded-lg bg-cb-accent px-4 py-2 text-sm font-medium text-cb-accent-fg hover:opacity-90 disabled:opacity-40"
           >
-            Save &amp; search
+            Save and search
           </button>
         </div>
       </form>
@@ -967,25 +954,26 @@ function AnchorRow({
   }
 
   return (
-    <div className="p-4">
+    <div className="px-4 py-3.5">
+      {/* Main row */}
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <div className="flex flex-wrap items-center gap-2">
-          <AnchorStatusDot status={anchor.status} />
+        <div className="flex items-center gap-2.5">
+          <StatusDot status={anchor.status} />
           <span className="text-sm font-medium">{anchor.query}</span>
-          <span className="rounded border border-foreground/15 px-1.5 py-0.5 font-mono text-[11px] text-foreground/60">
+          <span className="rounded-md bg-cb-surface px-2 py-0.5 text-xs text-cb-muted">
             {formatAnchorType(anchor.type)}
           </span>
         </div>
 
-        <div className="flex items-center gap-2 text-xs">
+        <div className="flex items-center gap-1.5 text-sm">
           {anchor.status === "unsearched" && (
             <button
               type="button"
               disabled={disabled}
               onClick={onLookup}
-              className="rounded border border-foreground/25 bg-foreground/[0.04] px-2.5 py-1 font-medium text-foreground transition-colors hover:bg-foreground/10 disabled:opacity-40"
+              className="rounded-lg border border-cb-border px-3 py-1.5 font-medium text-foreground transition-colors hover:bg-cb-surface disabled:opacity-40"
             >
-              Find match
+              Find matches
             </button>
           )}
           {anchor.status === "confirmed" && (
@@ -993,7 +981,7 @@ function AnchorRow({
               type="button"
               disabled={disabled}
               onClick={onUnconfirm}
-              className="rounded border border-foreground/15 px-2.5 py-1 text-foreground/70 transition-colors hover:border-foreground/30 hover:text-foreground disabled:opacity-40"
+              className="rounded-lg px-2.5 py-1.5 text-cb-muted hover:bg-cb-surface hover:text-foreground disabled:opacity-40"
             >
               Change
             </button>
@@ -1002,7 +990,7 @@ function AnchorRow({
             type="button"
             disabled={disabled || anchor.status === "searching"}
             onClick={openEdit}
-            className="rounded px-2 py-1 text-foreground/55 transition-colors hover:bg-foreground/[0.05] hover:text-foreground disabled:opacity-40"
+            className="rounded-lg px-2.5 py-1.5 text-cb-muted hover:bg-cb-surface hover:text-foreground disabled:opacity-40"
           >
             Edit
           </button>
@@ -1011,104 +999,94 @@ function AnchorRow({
             disabled={disabled || anchor.status === "searching"}
             onClick={onRemove}
             aria-label={`Remove ${anchor.query}`}
-            className="rounded px-2 py-1 text-foreground/55 transition-colors hover:bg-red-500/10 hover:text-red-600 dark:hover:text-red-400 disabled:opacity-40"
+            className="rounded-lg px-2.5 py-1.5 text-cb-muted hover:bg-cb-error-soft hover:text-cb-error disabled:opacity-40"
           >
             Remove
           </button>
         </div>
       </div>
 
-      {anchor.status === "unsearched" && (
-        <p className="mt-1.5 pl-4 text-xs text-foreground/50">
-          Not yet searched in Qloo. Click <strong>Find match</strong> to look up
-          candidate entities.
-        </p>
-      )}
-
+      {/* Searching state */}
       {anchor.status === "searching" && (
         <div
           role="status"
           aria-live="polite"
-          className="mt-2 flex items-center gap-2 pl-4 text-xs text-foreground/60"
+          className="mt-2.5 flex items-center gap-2 pl-[18px] text-sm text-cb-muted"
         >
           <span
-            className="h-3 w-3 animate-spin rounded-full border-2 border-foreground/20 border-t-foreground"
+            className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-cb-border border-t-foreground"
             aria-hidden="true"
           />
-          Searching Qloo for &ldquo;{anchor.query}&rdquo; (
-          {formatAnchorType(anchor.type)})…
+          Searching for &ldquo;{anchor.query}&rdquo;…
         </div>
       )}
 
+      {/* Confirmed entity */}
       {anchor.status === "confirmed" && anchor.confirmedEntity && (
-        <div className="mt-2 ml-4 flex flex-wrap items-center justify-between gap-2 rounded-md border border-emerald-500/25 bg-emerald-500/[0.06] px-3 py-2 text-xs">
-          <div className="flex flex-wrap items-center gap-1.5">
-            <span className="font-medium text-emerald-800 dark:text-emerald-300">
-              Confirmed:
-            </span>
-            <span className="font-semibold text-foreground">
-              {anchor.confirmedEntity.name}
-            </span>
-            {anchor.confirmedEntity.disambiguation && (
-              <span className="text-foreground/65">
-                ({anchor.confirmedEntity.disambiguation})
-              </span>
-            )}
-            <span className="font-mono text-[11px] text-foreground/50">
-              [{anchor.confirmedEntity.types.map(formatAnchorType).join(", ")}]
-            </span>
-          </div>
-          <span className="font-mono text-[11px] text-foreground/45">
-            ID: {anchor.confirmedEntity.entityId.slice(0, 8)}…
+        <div className="mt-2.5 ml-[18px] flex items-center gap-2 rounded-lg border border-cb-confirmed/20 bg-cb-confirmed-soft px-3.5 py-2.5 text-sm">
+          <svg
+            className="h-4 w-4 shrink-0 text-cb-confirmed"
+            viewBox="0 0 16 16"
+            fill="currentColor"
+            aria-hidden="true"
+          >
+            <path d="M8 16A8 8 0 108 0a8 8 0 000 16zm3.78-9.72a.75.75 0 00-1.06-1.06L7 8.94 5.28 7.22a.75.75 0 00-1.06 1.06l2.25 2.25a.75.75 0 001.06 0l4.25-4.25z" />
+          </svg>
+          <span className="font-medium">
+            {anchor.confirmedEntity.name}
           </span>
+          {anchor.confirmedEntity.disambiguation &&
+            anchor.confirmedEntity.disambiguation.toLowerCase() !==
+              anchor.confirmedEntity.name.toLowerCase() && (
+            <span className="text-cb-muted">
+              ({anchor.confirmedEntity.disambiguation})
+            </span>
+          )}
         </div>
       )}
 
+      {/* Candidate matches */}
       {anchor.status === "candidates" && anchor.candidates.length > 0 && (
-        <div className="mt-3 ml-4 space-y-2">
-          <p className="text-xs font-medium text-amber-700 dark:text-amber-300">
+        <div className="mt-3 ml-[18px] space-y-2">
+          <p className="text-sm font-medium text-cb-warning">
             {anchor.candidates.length === 1
-              ? "1 matching Qloo entity found — confirm to include in your profile:"
-              : `${anchor.candidates.length} matching Qloo entities found — select the exact one you mean:`}
+              ? "We found a match — is this the right one?"
+              : `We found ${anchor.candidates.length} possible matches — which one did you mean?`}
           </p>
 
           <div
             role="group"
-            aria-label={`Candidate matches for ${anchor.query}`}
+            aria-label={`Matches for ${anchor.query}`}
             className="space-y-1.5"
           >
             {anchor.candidates.map((cand) => (
               <div
                 key={cand.entityId}
-                className="flex flex-col justify-between gap-2 rounded-md border border-foreground/15 bg-foreground/[0.02] p-2.5 sm:flex-row sm:items-center"
+                className="flex flex-col justify-between gap-2 rounded-lg border border-cb-border bg-background p-3 sm:flex-row sm:items-center"
               >
-                <div className="min-w-0 space-y-0.5">
-                  <div className="flex flex-wrap items-center gap-1.5 text-xs">
-                    <span className="font-semibold text-foreground">
-                      {cand.name}
-                    </span>
-                    {cand.disambiguation && (
-                      <span className="rounded bg-foreground/[0.06] px-1.5 py-0.5 font-mono text-[11px] text-foreground/75">
+                <div className="min-w-0">
+                  <div className="flex flex-wrap items-center gap-2 text-sm">
+                    <span className="font-semibold">{cand.name}</span>
+                    {cand.disambiguation &&
+                      cand.disambiguation.toLowerCase() !==
+                        cand.name.toLowerCase() && (
+                      <span className="text-cb-muted">
                         {cand.disambiguation}
                       </span>
                     )}
                   </div>
-                  <div className="flex flex-wrap items-center gap-2 font-mono text-[11px] text-foreground/50">
-                    <span>
-                      Types: {cand.types.map(formatAnchorType).join(", ")}
-                    </span>
-                    <span>·</span>
-                    <span>Qloo ID: {cand.entityId.slice(0, 12)}…</span>
-                  </div>
+                  <p className="mt-0.5 text-xs text-cb-muted">
+                    {cand.types.map(formatAnchorType).join(", ")}
+                  </p>
                 </div>
 
                 <button
                   type="button"
                   disabled={disabled}
                   onClick={() => onConfirm(cand.entityId)}
-                  className="shrink-0 rounded-md bg-foreground px-3 py-1.5 text-xs font-medium text-background transition-opacity hover:opacity-90 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-foreground disabled:opacity-40"
+                  className="shrink-0 rounded-lg bg-cb-accent px-4 py-2 text-sm font-medium text-cb-accent-fg transition-opacity hover:opacity-90 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-cb-accent disabled:opacity-40"
                 >
-                  Confirm entity
+                  That&rsquo;s the one
                 </button>
               </div>
             ))}
@@ -1116,33 +1094,31 @@ function AnchorRow({
         </div>
       )}
 
+      {/* No matches */}
       {anchor.status === "no_matches" && (
         <div
           role="status"
-          className="mt-2.5 ml-4 flex flex-col justify-between gap-2 rounded-md border border-amber-500/30 bg-amber-500/5 p-3 text-xs sm:flex-row sm:items-center"
+          className="mt-2.5 ml-[18px] flex flex-col justify-between gap-2 rounded-lg border border-cb-warning/30 bg-cb-warning-soft p-3 text-sm sm:flex-row sm:items-center"
         >
-          <p className="text-foreground/75">
-            No Qloo entity of type{" "}
-            <strong className="font-medium">
-              {formatAnchorType(anchor.type)}
-            </strong>{" "}
-            matched &ldquo;{anchor.query}&rdquo;. Edit the name/type or remove
-            this anchor to continue.
+          <p className="text-foreground/80">
+            No matches found for &ldquo;{anchor.query}&rdquo; as{" "}
+            {formatAnchorType(anchor.type).toLowerCase()}. Try editing the name
+            or type.
           </p>
           <div className="flex shrink-0 items-center gap-2">
             <button
               type="button"
               disabled={disabled}
               onClick={openEdit}
-              className="rounded border border-foreground/20 bg-background px-2.5 py-1 font-medium text-foreground hover:bg-foreground/[0.04]"
+              className="rounded-lg border border-cb-border bg-background px-3 py-1.5 font-medium text-foreground hover:bg-cb-surface"
             >
-              Edit anchor
+              Edit
             </button>
             <button
               type="button"
               disabled={disabled}
               onClick={onRemove}
-              className="rounded border border-red-500/30 px-2.5 py-1 font-medium text-red-700 dark:text-red-300 hover:bg-red-500/10"
+              className="rounded-lg border border-cb-error/30 px-3 py-1.5 font-medium text-cb-error hover:bg-cb-error-soft"
             >
               Remove
             </button>
@@ -1150,37 +1126,37 @@ function AnchorRow({
         </div>
       )}
 
+      {/* Lookup error */}
       {anchor.status === "lookup_error" && (
         <div
           role="alert"
-          className="mt-2.5 ml-4 flex flex-col justify-between gap-2 rounded-md border border-red-500/30 bg-red-500/5 p-3 text-xs sm:flex-row sm:items-center"
+          className="mt-2.5 ml-[18px] flex flex-col justify-between gap-2 rounded-lg border border-cb-error/30 bg-cb-error-soft p-3 text-sm sm:flex-row sm:items-center"
         >
-          <p className="text-foreground/75">
-            {anchor.errorMessage ??
-              "Lookup failed for this anchor. You can retry, edit, or remove it."}
+          <p className="text-foreground/80">
+            {anchor.errorMessage ?? "Search failed. You can retry or edit this interest."}
           </p>
           <div className="flex shrink-0 items-center gap-2">
             <button
               type="button"
               disabled={disabled}
               onClick={onLookup}
-              className="rounded border border-foreground/20 bg-background px-2.5 py-1 font-medium text-foreground hover:bg-foreground/[0.04]"
+              className="rounded-lg border border-cb-border bg-background px-3 py-1.5 font-medium text-foreground hover:bg-cb-surface"
             >
-              Retry lookup
+              Retry
             </button>
             <button
               type="button"
               disabled={disabled}
               onClick={openEdit}
-              className="rounded border border-foreground/20 bg-background px-2.5 py-1 font-medium text-foreground hover:bg-foreground/[0.04]"
+              className="rounded-lg border border-cb-border bg-background px-3 py-1.5 font-medium text-foreground hover:bg-cb-surface"
             >
-              Edit anchor
+              Edit
             </button>
             <button
               type="button"
               disabled={disabled}
               onClick={onRemove}
-              className="rounded border border-red-500/30 px-2.5 py-1 font-medium text-red-700 dark:text-red-300 hover:bg-red-500/10"
+              className="rounded-lg border border-cb-error/30 px-3 py-1.5 font-medium text-cb-error hover:bg-cb-error-soft"
             >
               Remove
             </button>
@@ -1191,25 +1167,7 @@ function AnchorRow({
   );
 }
 
-function AnchorStatusDot({ status }: { status: AnchorItem["status"] }) {
-  const color = {
-    unsearched: "bg-foreground/25",
-    searching: "bg-foreground animate-pulse",
-    candidates: "bg-amber-500",
-    confirmed: "bg-emerald-500",
-    no_matches: "bg-amber-500",
-    lookup_error: "bg-red-500",
-  }[status];
-
-  return (
-    <span
-      className={`inline-block h-2 w-2 shrink-0 rounded-full ${color}`}
-      aria-hidden="true"
-    />
-  );
-}
-
-// ── Cultural Starter Kit Results View ────────────────────────
+// ── Results View ─────────────────────────────────────────────
 
 interface StarterKitResultsViewProps {
   completion: SafeKitCompletion;
@@ -1253,10 +1211,12 @@ function StarterKitResultsView({
     () => completion.status !== "success" || completion.mode === "deterministic",
   );
 
-  const visibleGroups = useMemo(() => {
-    if (activeCategoryFilter === "__all__") return groups;
-    return groups.filter((g) => g.key === activeCategoryFilter);
-  }, [groups, activeCategoryFilter]);
+  // Flat list of visible recommendations, respecting the active category filter
+  const visibleItems = useMemo(() => {
+    if (activeCategoryFilter === "__all__") return completion.recommendations;
+    const activeGroup = groups.find((g) => g.key === activeCategoryFilter);
+    return activeGroup ? activeGroup.items : [];
+  }, [completion.recommendations, groups, activeCategoryFilter]);
 
   const effectiveSelectedId =
     selectedEntityId &&
@@ -1272,12 +1232,11 @@ function StarterKitResultsView({
 
   function handleSelectFromMap(entityId: string) {
     setSelectedEntityId(entityId);
-    // If a category filter hid the selected card, reset to show all categories
     if (activeCategoryFilter !== "__all__") {
-      const inCurrentGroup = visibleGroups.some((g) =>
-        g.items.some((i) => i.entityId === entityId),
-      );
-      if (!inCurrentGroup) {
+      const activeGroup = groups.find((g) => g.key === activeCategoryFilter);
+      const inCurrentFilter =
+        activeGroup?.items.some((i) => i.entityId === entityId) ?? false;
+      if (!inCurrentFilter) {
         setActiveCategoryFilter("__all__");
       }
     }
@@ -1296,208 +1255,156 @@ function StarterKitResultsView({
 
   const statusPresentation = getKitStatusPresentation(completion.status);
 
-  const unmappedCount = Math.max(
-    0,
-    completion.recommendations.length - markers.length,
-  );
-
   return (
-    <div className="space-y-6">
-      {/* 1. Top Kit Summary & Action Header */}
-      <div className="rounded-lg border border-foreground/15 bg-foreground/[0.02] p-5">
-        <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
-          <div className="space-y-2">
-            <div className="flex flex-wrap items-center gap-2">
-              <h3 className="text-xl font-semibold tracking-tight">
-                {displayCity} Cultural Starter Kit
-              </h3>
-              <span
-                className={`rounded border px-2 py-0.5 font-mono text-xs font-medium ${statusPresentation.badgeClassName}`}
-              >
-                {statusPresentation.badgeText}
-              </span>
-              <span className="rounded border border-foreground/15 bg-background px-2 py-0.5 font-mono text-xs text-foreground/75">
-                {completion.mode === "deterministic"
-                  ? "Deterministic Qloo fallback"
-                  : "Agent-assisted (Bedrock + Qloo)"}
-              </span>
-              {completion.cached && (
-                <span className="rounded border border-foreground/15 bg-background px-2 py-0.5 font-mono text-xs text-foreground/65">
-                  Cached response
-                </span>
-              )}
-            </div>
-
-            <p className="text-sm text-foreground/75">{completion.summary}</p>
-            <p className="text-xs text-foreground/60">
-              {statusPresentation.scopeNote}
-            </p>
-
-            {/* Profile & Evidence Context Bar */}
-            <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-foreground/60">
-              <span>
-                <strong>Places found:</strong>{" "}
-                {completion.recommendations.length} accepted{" "}
+    <div className="space-y-8">
+      {/* Results header */}
+      <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+        <div className="space-y-1.5">
+          <div className="flex flex-wrap items-center gap-3">
+            <h2 className="text-2xl font-semibold tracking-tight sm:text-3xl">
+              Your {displayCity} guide
+            </h2>
+            <span
+              className={`rounded-md px-2.5 py-1 text-xs font-medium ${statusPresentation.badgeClassName}`}
+            >
+              {statusPresentation.badgeText}
+            </span>
+          </div>
+          <p className="text-sm text-cb-muted">
+            {completion.recommendations.length > 0 ? (
+              <>
+                {completion.recommendations.length}{" "}
                 {completion.recommendations.length === 1 ? "place" : "places"}{" "}
-                across {groups.length} Qloo{" "}
-                {groups.length === 1 ? "category group" : "category groups"}
-              </span>
-              <span>·</span>
-              <span>
-                <strong>Mapped:</strong> {markers.length} of{" "}
-                {completion.recommendations.length}
-                {unmappedCount > 0
-                  ? ` (${unmappedCount} in list without coordinates)`
-                  : ""}
-              </span>
-              {confirmedAnchorsSummary.length > 0 && (
-                <>
-                  <span>·</span>
-                  <span>
-                    <strong>Confirmed anchors:</strong>{" "}
-                    {confirmedAnchorsSummary.join(", ")}
-                  </span>
-                </>
-              )}
-            </div>
-          </div>
-
-          <div className="flex shrink-0 flex-wrap items-center gap-2">
-            <button
-              type="button"
-              onClick={onEditAnchors}
-              disabled={isGenerating}
-              className="rounded-md border border-foreground/20 bg-background px-3.5 py-2 text-xs font-medium text-foreground transition-colors hover:bg-foreground/[0.04] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-foreground disabled:opacity-40"
-            >
-              Edit anchors &amp; revise kit
-            </button>
-            <button
-              type="button"
-              onClick={() => setIsTraceOpen((prev) => !prev)}
-              aria-expanded={isTraceOpen}
-              className="rounded-md border border-foreground/20 bg-background px-3.5 py-2 text-xs font-medium text-foreground transition-colors hover:bg-foreground/[0.04] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-foreground"
-            >
-              {isTraceOpen ? "Hide search process" : "How this kit was built"}
-            </button>
-          </div>
+                found in {displayCity}
+                {confirmedAnchorsSummary.length > 0 && (
+                  <> based on {confirmedAnchorsSummary.join(", ")}</>
+                )}
+              </>
+            ) : (
+              completion.summary
+            )}
+          </p>
         </div>
 
-        {/* Partial or Deterministic Fallback Honest Notice */}
-        {(completion.status === "partial" ||
-          completion.mode === "deterministic") && (
-          <div className="mt-4 flex flex-col gap-1 rounded-md border border-foreground/15 bg-background px-3.5 py-2.5 text-xs text-foreground/75">
-            {completion.status === "partial" && (
-              <p>
-                <strong>Partial result notice:</strong>{" "}
-                {completion.filteredInvalidCount > 0
-                  ? `${completion.filteredInvalidCount} candidate ${
-                      completion.filteredInvalidCount === 1
-                        ? "ID was"
-                        : "IDs were"
-                    } excluded because ${
-                      completion.filteredInvalidCount === 1
-                        ? "it was"
-                        : "they were"
-                    } not in the deterministic validator's accepted set.`
-                  : "Only recommendations that passed every deterministic validation check are included."}{" "}
-                CultureBridge never pads results to reach a target count.
-              </p>
-            )}
-            {completion.mode === "deterministic" && (
-              <p>
-                <strong>Deterministic fallback mode:</strong>{" "}
-                {completion.searchProcess.fallbackReason ??
-                  "Results were generated directly from Qloo taste queries and deterministic screening without LLM synthesis."}
-              </p>
-            )}
-          </div>
-        )}
-
-        {/* Deterministic Evidence Label Key */}
-        <div
-          aria-label="Evidence label key"
-          className="mt-4 grid grid-cols-1 gap-2 border-t border-foreground/10 pt-3.5 sm:grid-cols-3"
-        >
-          {(
-            ["connection", "useful-place", "exploratory"] as const
-          ).map((labelKey) => {
-            const info = LABEL_PRESENTATION[labelKey];
-            const count = completion.recommendations.filter(
-              (r) => r.label === labelKey,
-            ).length;
-            return (
-              <div
-                key={labelKey}
-                className="flex items-start gap-2 rounded border border-foreground/10 bg-background p-2.5 text-xs"
-              >
-                <span
-                  className={`mt-0.5 inline-flex shrink-0 items-center gap-1 rounded border px-1.5 py-0.5 font-mono text-[11px] font-medium ${info.badgeClassName}`}
-                >
-                  <span aria-hidden="true">{info.symbol}</span>
-                  <span>{info.badgeText}</span>
-                </span>
-                <div className="min-w-0 flex-1">
-                  <div className="flex items-center justify-between gap-1">
-                    <span className="font-medium text-foreground/85">
-                      {info.shortTitle}
-                    </span>
-                    <span className="font-mono text-[11px] text-foreground/55">
-                      {count}
-                    </span>
-                  </div>
-                  <p className="mt-0.5 text-[11px] leading-snug text-foreground/60">
-                    {info.description}
-                  </p>
-                </div>
-              </div>
-            );
-          })}
+        <div className="flex shrink-0 items-center gap-2">
+          <button
+            type="button"
+            onClick={onEditAnchors}
+            disabled={isGenerating}
+            className="rounded-lg border border-cb-border px-3.5 py-2 text-sm font-medium text-foreground hover:bg-cb-surface focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-cb-accent disabled:opacity-40"
+          >
+            Edit interests
+          </button>
+          <button
+            type="button"
+            onClick={() => setIsTraceOpen((prev) => !prev)}
+            aria-expanded={isTraceOpen}
+            className="rounded-lg border border-cb-border px-3.5 py-2 text-sm font-medium text-foreground hover:bg-cb-surface focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-cb-accent"
+          >
+            {isTraceOpen ? "Hide details" : "How it works"}
+          </button>
         </div>
       </div>
 
-      {/* 2. Collapsible Agent Trace Drawer */}
+      {/* Fallback/partial notices */}
+      {(completion.status === "partial" ||
+        completion.mode === "deterministic") && (
+        <div className="rounded-lg border border-cb-border bg-cb-surface/50 px-4 py-3 text-sm text-cb-muted">
+          {completion.status === "partial" && (
+            <p>
+              <strong className="text-foreground">Partial results:</strong>{" "}
+              {completion.filteredInvalidCount > 0
+                ? `${completion.filteredInvalidCount} candidate${
+                    completion.filteredInvalidCount === 1 ? " was" : "s were"
+                  } excluded because ${
+                    completion.filteredInvalidCount === 1 ? "it" : "they"
+                  } didn't pass quality checks.`
+                : "Only recommendations that passed every quality check are shown."}{" "}
+              CultureBridge never pads results.
+            </p>
+          )}
+          {completion.mode === "deterministic" && (
+            <p>
+              <strong className="text-foreground">How these were found:</strong>{" "}
+              {completion.searchProcess.fallbackReason ??
+                "Results were generated directly from taste data without AI synthesis."}
+            </p>
+          )}
+        </div>
+      )}
+
+      {/* Evidence label key — compact inline */}
+      {completion.recommendations.length > 0 && (
+        <div className="flex flex-wrap gap-x-5 gap-y-2 text-xs text-cb-muted">
+          {(["connection", "useful-place", "exploratory"] as const).map(
+            (labelKey) => {
+              const info = LABEL_PRESENTATION[labelKey];
+              const count = completion.recommendations.filter(
+                (r) => r.label === labelKey,
+              ).length;
+              if (count === 0) return null;
+              const hasMultipleLabelTypes =
+                count < completion.recommendations.length;
+              return (
+                <span key={labelKey} className="flex items-center gap-1.5">
+                  <span
+                    className={`inline-flex items-center gap-1 rounded-md px-2 py-0.5 text-xs font-medium ${info.badgeClassName}`}
+                  >
+                    <span aria-hidden="true">{info.symbol}</span>
+                    {info.badgeText}
+                  </span>
+                  <span>
+                    {info.shortTitle}
+                    {hasMultipleLabelTypes ? ` (${count})` : ""}
+                  </span>
+                </span>
+              );
+            },
+          )}
+        </div>
+      )}
+
+      {/* Agent trace drawer */}
       <AgentTraceDrawer
         process={completion.searchProcess}
         isOpen={isTraceOpen}
         onToggle={() => setIsTraceOpen((prev) => !prev)}
       />
 
-      {/* 3. Empty vs Populated Results Experience */}
+      {/* Empty vs populated results */}
       {completion.recommendations.length === 0 ? (
-        <div className="rounded-lg border border-foreground/15 bg-foreground/[0.015] p-6">
-          <h4 className="text-base font-semibold text-foreground/90">
-            No places passed deterministic screening for this query
-          </h4>
-          <p className="mt-1.5 max-w-2xl text-xs leading-relaxed text-foreground/65">
-            CultureBridge never pads a starter kit with excluded hotels,
-            transit hubs, closed listings, or fabricated matches. You can
-            inspect the search process above to see how Qloo was queried and why
-            candidates were filtered, or adjust your anchors to try a different
-            combination.
+        <div className="rounded-lg border border-cb-border bg-cb-surface/50 p-8">
+          <h3 className="text-lg font-semibold">
+            No places matched your interests
+          </h3>
+          <p className="mt-2 max-w-lg text-sm text-cb-muted leading-relaxed">
+            CultureBridge never shows unverified or low-quality matches. You can
+            check the search details above to see what was tried, or adjust your
+            interests.
           </p>
-          <div className="mt-4 flex flex-wrap items-center gap-2.5">
+          <div className="mt-5 flex flex-wrap gap-2.5">
             <button
               type="button"
               onClick={onEditAnchors}
               disabled={isGenerating}
-              className="rounded-md bg-foreground px-4 py-2 text-xs font-medium text-background transition-opacity hover:opacity-90 disabled:opacity-40"
+              className="rounded-lg bg-cb-accent px-4 py-2.5 text-sm font-medium text-cb-accent-fg hover:opacity-90 disabled:opacity-40"
             >
-              Edit cultural anchors
+              Edit interests
             </button>
             <button
               type="button"
               disabled={isGenerating}
               onClick={onRegenerate}
-              className="rounded-md border border-foreground/20 bg-background px-4 py-2 text-xs font-medium text-foreground hover:bg-foreground/[0.04] disabled:opacity-40"
+              className="rounded-lg border border-cb-border px-4 py-2.5 text-sm font-medium text-foreground hover:bg-cb-surface disabled:opacity-40"
             >
-              Retry generation
+              Try again
             </button>
           </div>
         </div>
       ) : (
-        <div className="grid grid-cols-1 gap-6 lg:grid-cols-12 lg:items-start">
-          {/* Map Column — shown above list on mobile, sticky right column on desktop */}
-          <div className="order-1 lg:order-2 lg:col-span-5 lg:sticky lg:top-20">
+        <div className="grid grid-cols-1 gap-8 lg:grid-cols-12 lg:items-start">
+          {/* Map — above list on mobile, sticky right column on desktop */}
+          <div className="order-1 lg:order-2 lg:col-span-5 lg:sticky lg:top-16">
             <ResultsMap
               city={displayCity}
               recommendations={completion.recommendations}
@@ -1507,25 +1414,25 @@ function StarterKitResultsView({
             />
           </div>
 
-          {/* Grouped Recommendations Column */}
-          <div className="order-2 space-y-5 lg:order-1 lg:col-span-7">
-            {/* Category Filter / Jump Bar */}
+          {/* Recommendation list */}
+          <div className="order-2 space-y-6 lg:order-1 lg:col-span-7">
+            {/* Category filter tabs */}
             {groups.length > 1 && (
               <nav
-                aria-label="Filter recommendations by Qloo category"
-                className="flex flex-wrap items-center gap-1.5 rounded-lg border border-foreground/12 bg-foreground/[0.015] p-2.5"
+                aria-label="Filter by category"
+                className="flex flex-wrap gap-1.5"
               >
                 <button
                   type="button"
                   aria-pressed={activeCategoryFilter === "__all__"}
                   onClick={() => setActiveCategoryFilter("__all__")}
-                  className={`rounded border px-2.5 py-1 text-xs font-medium transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-foreground ${
+                  className={`rounded-lg px-3 py-1.5 text-sm font-medium transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-cb-accent ${
                     activeCategoryFilter === "__all__"
-                      ? "border-foreground bg-foreground text-background"
-                      : "border-foreground/15 bg-background text-foreground/75 hover:border-foreground/35"
+                      ? "bg-cb-accent text-cb-accent-fg"
+                      : "bg-cb-surface text-foreground hover:bg-cb-border"
                   }`}
                 >
-                  All categories ({completion.recommendations.length})
+                  All ({completion.recommendations.length})
                 </button>
                 {groups.map((group) => {
                   const active = activeCategoryFilter === group.key;
@@ -1535,10 +1442,10 @@ function StarterKitResultsView({
                       type="button"
                       aria-pressed={active}
                       onClick={() => setActiveCategoryFilter(group.key)}
-                      className={`rounded border px-2.5 py-1 text-xs font-medium transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-foreground ${
+                      className={`rounded-lg px-3 py-1.5 text-sm font-medium transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-cb-accent ${
                         active
-                          ? "border-foreground bg-foreground text-background"
-                          : "border-foreground/15 bg-background text-foreground/75 hover:border-foreground/35"
+                          ? "bg-cb-accent text-cb-accent-fg"
+                          : "bg-cb-surface text-foreground hover:bg-cb-border"
                       }`}
                     >
                       {group.title} ({group.items.length})
@@ -1548,43 +1455,20 @@ function StarterKitResultsView({
               </nav>
             )}
 
-            {/* Category Group Sections */}
-            <div className="space-y-6">
-              {visibleGroups.map((group) => (
-                <section
-                  key={group.key}
-                  aria-label={`${group.title} recommendations`}
-                  className="space-y-3"
-                >
-                  <div className="flex items-baseline justify-between border-b border-foreground/12 pb-2">
-                    <div className="flex items-center gap-2">
-                      <h4 className="text-sm font-semibold tracking-tight text-foreground">
-                        {group.title}
-                      </h4>
-                      {group.isUncategorized && (
-                        <span className="text-xs text-foreground/55">
-                          · No specific place-category tag in Qloo
-                        </span>
-                      )}
-                    </div>
-                    <span className="font-mono text-xs text-foreground/55">
-                      {group.items.length}{" "}
-                      {group.items.length === 1 ? "place" : "places"}
-                    </span>
-                  </div>
-
-                  <div className="space-y-3">
-                    {group.items.map((rec) => (
-                      <RecommendationCard
-                        key={rec.entityId}
-                        rec={rec}
-                        pinOrderIndex={markerOrderById.get(rec.entityId) ?? null}
-                        isSelected={selection.selectedEntityId === rec.entityId}
-                        onSelect={() => setSelectedEntityId(rec.entityId)}
-                      />
-                    ))}
-                  </div>
-                </section>
+            {/* Unified flat recommendation list */}
+            <div className="divide-y divide-cb-border rounded-lg border border-cb-border">
+              {visibleItems.map((rec) => (
+                <RecommendationCard
+                  key={rec.entityId}
+                  rec={rec}
+                  pinOrderIndex={
+                    markerOrderById.get(rec.entityId) ?? null
+                  }
+                  isSelected={
+                    selection.selectedEntityId === rec.entityId
+                  }
+                  onSelect={() => setSelectedEntityId(rec.entityId)}
+                />
               ))}
             </div>
           </div>
@@ -1609,6 +1493,7 @@ function RecommendationCard({
   isSelected,
   onSelect,
 }: RecommendationCardProps) {
+  const [isExpanded, setIsExpanded] = useState(false);
   const labelInfo = getLabelPresentation(rec.label);
   const categoryInfo = useMemo(() => describeCategoryEvidence(rec), [rec]);
   const provenance = useMemo(() => formatRecommendationProvenance(rec), [rec]);
@@ -1619,210 +1504,181 @@ function RecommendationCard({
       id={`rec-card-${rec.entityId}`}
       tabIndex={-1}
       aria-label={`${rec.name} — ${labelInfo.badgeText}`}
-      className={`rounded-lg border p-4 transition-colors focus:outline-none ${
-        isSelected
-          ? "border-foreground bg-foreground/[0.03] ring-1 ring-foreground"
-          : "border-foreground/15 bg-background hover:border-foreground/30"
+      className={`px-4 py-4 transition-colors focus:outline-none ${
+        isSelected ? "bg-cb-accent-soft" : "hover:bg-cb-surface/50"
       }`}
     >
-      {/* 1. Card Header: Pin badge, Name, Categories, Evidence Label */}
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        <div className="min-w-0 flex-1 space-y-1">
-          <div className="flex flex-wrap items-center gap-2">
-            {practical.mappable && pinOrderIndex !== null ? (
-              <span
-                title={`Map pin #${pinOrderIndex}`}
-                className={`inline-flex items-center gap-0.5 rounded-full border px-2 py-0.5 font-mono text-[11px] font-semibold ${
-                  isSelected
-                    ? "border-foreground bg-foreground text-background"
-                    : "border-foreground/30 bg-foreground/[0.05] text-foreground"
-                }`}
-              >
-                <span aria-hidden="true">{labelInfo.symbol}</span>
-                <span>{pinOrderIndex}</span>
-              </span>
-            ) : (
-              <span
-                title="No valid map coordinates in Qloo"
-                className="inline-flex items-center rounded border border-foreground/15 bg-foreground/[0.04] px-1.5 py-0.5 font-mono text-[10px] text-foreground/60"
-              >
-                Not on map
-              </span>
-            )}
+      {/* Header row */}
+      <div className="flex items-start gap-3">
+        {/* Pin badge */}
+        {practical.mappable && pinOrderIndex !== null ? (
+          <button
+            type="button"
+            onClick={onSelect}
+            title="Show on map"
+            className={`mt-0.5 inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-xs font-semibold transition-colors ${
+              isSelected
+                ? "bg-cb-accent text-cb-accent-fg"
+                : "border border-cb-border bg-background text-foreground hover:border-cb-accent hover:text-cb-accent"
+            }`}
+          >
+            {pinOrderIndex}
+          </button>
+        ) : (
+          <span className="mt-0.5 inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-dashed border-cb-border text-xs text-cb-muted">
+            —
+          </span>
+        )}
 
-            <h5 className="text-base font-semibold tracking-tight text-foreground">
+        {/* Content */}
+        <div className="min-w-0 flex-1">
+          <div className="flex flex-wrap items-center gap-2">
+            <h4 className="text-base font-semibold tracking-tight">
               {rec.name}
-            </h5>
+            </h4>
+            <span
+              className={`inline-flex items-center gap-1 rounded-md px-2 py-0.5 text-xs font-medium ${labelInfo.badgeClassName}`}
+            >
+              <span aria-hidden="true">{labelInfo.symbol}</span>
+              {labelInfo.badgeText}
+            </span>
           </div>
 
-          <p className="text-xs text-foreground/65">
-            {categoryInfo.qlooCategories.length > 0 ? (
-              <>
-                <span className="font-medium text-foreground/80">
-                  {categoryInfo.qlooCategoryLabel}:
-                </span>{" "}
-                {categoryInfo.qlooCategories.join(" · ")}
-              </>
-            ) : (
-              <span className="italic text-foreground/55">
-                Category not specified in Qloo output
-              </span>
-            )}
+          {/* Category + location */}
+          <p className="mt-0.5 text-sm text-cb-muted">
+            {[
+              categoryInfo.qlooCategories[0],
+              practical.locationLine,
+            ]
+              .filter(Boolean)
+              .join(" · ") || "Location not available"}
           </p>
-        </div>
 
-        <span
-          className={`inline-flex shrink-0 items-center gap-1 rounded border px-2.5 py-1 font-mono text-xs font-medium ${labelInfo.badgeClassName}`}
-        >
-          <span aria-hidden="true">{labelInfo.symbol}</span>
-          <span>{labelInfo.badgeText}</span>
-        </span>
-      </div>
+          {/* Explanation */}
+          <p className="mt-2 text-sm leading-relaxed text-foreground/90">
+            {rec.explanationText}
+          </p>
 
-      {/* 2. Verified Explanation */}
-      <p className="mt-3 text-sm leading-relaxed text-foreground/85">
-        {rec.explanationText}
-      </p>
+          {/* Action row */}
+          <div className="mt-2.5 flex items-center gap-3">
+            <button
+              type="button"
+              onClick={() => setIsExpanded(!isExpanded)}
+              className="text-sm font-medium text-cb-accent hover:underline"
+            >
+              {isExpanded ? "Less" : "Details"}
+            </button>
+            {practical.mappable && (
+              <button
+                type="button"
+                onClick={onSelect}
+                className={`text-sm font-medium ${
+                  isSelected
+                    ? "text-cb-accent"
+                    : "text-cb-muted hover:text-cb-accent"
+                }`}
+              >
+                {isSelected ? "Shown on map" : "Show on map"}
+              </button>
+            )}
+          </div>
 
-      {/* 3. Grounded Query Provenance & Evidence Box */}
-      <div className="mt-3 space-y-1 rounded-md border border-foreground/12 bg-foreground/[0.02] p-3 text-xs">
-        <div className="flex flex-wrap items-center justify-between gap-2">
-          <span className="font-semibold text-foreground/90">
-            {provenance.headline}
-          </span>
-          {provenance.categoryMatchLabel && (
-            <span className="rounded border border-foreground/15 bg-background px-1.5 py-0.5 font-mono text-[10px] text-foreground/65">
-              {provenance.categoryMatchLabel}
-            </span>
+          {/* Expanded details */}
+          {isExpanded && (
+            <div className="mt-4 space-y-4 border-t border-cb-border pt-4 text-sm">
+              {/* Practical details */}
+              {practical.hasAnyPracticalDetail && (
+                <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                  {practical.locationLine && (
+                    <div>
+                      <dt className="text-xs font-medium text-cb-muted">
+                        Location
+                      </dt>
+                      <dd className="mt-0.5">{practical.locationLine}</dd>
+                    </div>
+                  )}
+                  {practical.websiteUrl && practical.websiteDisplay && (
+                    <div>
+                      <dt className="text-xs font-medium text-cb-muted">
+                        Website
+                      </dt>
+                      <dd className="mt-0.5">
+                        <a
+                          href={practical.websiteUrl}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="text-cb-accent underline underline-offset-2 hover:opacity-80"
+                        >
+                          {practical.websiteDisplay}
+                        </a>
+                      </dd>
+                    </div>
+                  )}
+                  {practical.phone && (
+                    <div>
+                      <dt className="text-xs font-medium text-cb-muted">
+                        Phone
+                      </dt>
+                      <dd className="mt-0.5">{practical.phone}</dd>
+                    </div>
+                  )}
+                  {practical.priceTier && (
+                    <div>
+                      <dt className="text-xs font-medium text-cb-muted">
+                        Price
+                      </dt>
+                      <dd className="mt-0.5">{practical.priceTier}</dd>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* Categories */}
+              {categoryInfo.qlooCategories.length > 0 && (
+                <div>
+                  <span className="text-xs font-medium text-cb-muted">
+                    {categoryInfo.qlooCategoryLabel}:
+                  </span>{" "}
+                  <span className="text-sm">
+                    {categoryInfo.qlooCategories.join(", ")}
+                  </span>
+                </div>
+              )}
+
+              {/* Tags */}
+              {practical.supportingTags.length > 0 && (
+                <div className="flex flex-wrap gap-1.5">
+                  {practical.supportingTags.map((tag) => (
+                    <span
+                      key={tag}
+                      className="rounded-md bg-cb-surface px-2 py-0.5 text-xs text-cb-muted"
+                    >
+                      {tag}
+                    </span>
+                  ))}
+                </div>
+              )}
+
+              {/* Provenance — why this was suggested */}
+              <div className="rounded-lg border border-cb-border bg-cb-surface/50 p-3">
+                <p className="text-xs font-medium text-cb-muted">
+                  Why this was suggested
+                </p>
+                <p className="mt-1 text-sm font-medium">
+                  {provenance.headline}
+                </p>
+                <p className="mt-0.5 text-sm text-cb-muted">
+                  {provenance.detail}
+                </p>
+                {provenance.honestyDisclaimer && (
+                  <p className="mt-1.5 text-xs text-cb-muted">
+                    {provenance.honestyDisclaimer}
+                  </p>
+                )}
+              </div>
+            </div>
           )}
         </div>
-        <p className="text-foreground/70">{provenance.detail}</p>
-        {provenance.honestyDisclaimer && (
-          <p className="pt-0.5 text-[11px] text-foreground/55">
-            {provenance.honestyDisclaimer}
-          </p>
-        )}
-      </div>
-
-      {/* 4. Supporting Qloo Tags (when present) */}
-      {practical.supportingTags.length > 0 && (
-        <div className="mt-3 flex flex-wrap items-center gap-1.5">
-          <span className="text-[11px] font-medium text-foreground/55">
-            Qloo tags:
-          </span>
-          {practical.supportingTags.map((tag) => (
-            <span
-              key={tag}
-              className="rounded border border-foreground/12 bg-foreground/[0.025] px-2 py-0.5 font-mono text-[11px] text-foreground/70"
-            >
-              {tag}
-            </span>
-          ))}
-        </div>
-      )}
-
-      {/* 5. Practical Venue Details & Explicit Unknowns */}
-      <dl className="mt-3 grid grid-cols-1 gap-2 border-t border-foreground/10 pt-3 text-xs sm:grid-cols-2">
-        <div>
-          <dt className="text-[11px] font-medium text-foreground/55">
-            Neighborhood &amp; address
-          </dt>
-          <dd className="mt-0.5 text-foreground/85">
-            {practical.locationLine ?? (
-              <span className="text-foreground/50">
-                Address &amp; neighborhood unavailable in Qloo
-              </span>
-            )}
-          </dd>
-        </div>
-
-        <div>
-          <dt className="text-[11px] font-medium text-foreground/55">
-            Website &amp; contact
-          </dt>
-          <dd className="mt-0.5 flex flex-wrap items-center gap-x-2.5 gap-y-1 text-foreground/85">
-            {practical.websiteUrl && practical.websiteDisplay ? (
-              <a
-                href={practical.websiteUrl}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="font-medium underline underline-offset-2 hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-foreground"
-              >
-                {practical.websiteDisplay}
-              </a>
-            ) : (
-              <span className="text-foreground/50">Website unavailable</span>
-            )}
-            {practical.phone && (
-              <>
-                <span className="text-foreground/30">·</span>
-                <span className="font-mono text-[11px]">{practical.phone}</span>
-              </>
-            )}
-          </dd>
-        </div>
-
-        <div>
-          <dt className="text-[11px] font-medium text-foreground/55">
-            Price &amp; practical details
-          </dt>
-          <dd className="mt-0.5 text-foreground/85">
-            {practical.priceTier ? (
-              <span>
-                Price tier:{" "}
-                <strong className="font-mono">{practical.priceTier}</strong>
-              </span>
-            ) : (
-              <span className="text-foreground/50">Price tier: Unknown</span>
-            )}
-            <span className="text-foreground/30"> · </span>
-            <span className="text-foreground/50">
-              Hours &amp; ratings: Not provided
-            </span>
-          </dd>
-        </div>
-
-        <div>
-          <dt className="text-[11px] font-medium text-foreground/55">
-            Unavailable in Qloo output
-          </dt>
-          <dd className="mt-0.5 text-[11px] text-foreground/55">
-            {practical.unavailableFields.join(", ")}
-          </dd>
-        </div>
-      </dl>
-
-      {/* 6. Card Footer: Map Coordination & Selection */}
-      <div className="mt-3 flex flex-wrap items-center justify-between gap-2 border-t border-foreground/10 pt-2.5 text-xs">
-        {practical.mappable && practical.coordinates ? (
-          <span className="font-mono text-[11px] text-foreground/55">
-            Coordinates: {practical.coordinates.lat.toFixed(4)},{" "}
-            {practical.coordinates.lon.toFixed(4)}
-          </span>
-        ) : (
-          <span className="text-[11px] text-foreground/55">
-            Cannot be shown on map — no valid coordinates in Qloo output
-          </span>
-        )}
-
-        <button
-          type="button"
-          aria-pressed={isSelected}
-          onClick={onSelect}
-          className={`rounded border px-3 py-1 text-xs font-medium transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-foreground ${
-            isSelected
-              ? "border-foreground bg-foreground text-background"
-              : "border-foreground/20 bg-background text-foreground hover:bg-foreground/[0.04]"
-          }`}
-        >
-          {practical.mappable
-            ? isSelected
-              ? "Focused on map"
-              : "Focus on map"
-            : isSelected
-              ? "Selected in list"
-              : "Select place"}
-        </button>
       </div>
     </article>
   );

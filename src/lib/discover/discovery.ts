@@ -106,7 +106,7 @@ export async function discover(
   const failures: QueryFailure[] = [];
   let queriesUsed = 0;
 
-  const singleResults = await Promise.allSettled(
+  const singleResultsPromise = Promise.allSettled(
     effectiveAnchors.map(async (anchor) => {
       const result = await fetchInsights({
         anchors: [anchor.entityId],
@@ -118,6 +118,27 @@ export async function discover(
       return { anchor, result };
     }),
   );
+
+  // When multiple anchors exist, the blended query has a distinct cache key from
+  // single-anchor queries, so start it concurrently while preserving merge order.
+  const blendedEarlyPromise =
+    effectiveAnchors.length > 1
+      ? fetchInsights(
+          {
+            anchors: effectiveAnchors.map((a) => a.entityId),
+            city,
+            tagId: categoryTagId,
+            take: resultsPerQuery,
+            explainability: true,
+          },
+          signal,
+        ).then(
+          (value) => ({ ok: true as const, value }),
+          (error) => ({ ok: false as const, error }),
+        )
+      : null;
+
+  const singleResults = await singleResultsPromise;
 
   for (let i = 0; i < singleResults.length; i++) {
     queriesUsed++;
@@ -158,13 +179,20 @@ export async function discover(
   }
 
   try {
-    const blendedResult = await fetchInsights({
-      anchors: effectiveAnchors.map((a) => a.entityId),
-      city,
-      tagId: categoryTagId,
-      take: resultsPerQuery,
-      explainability: true,
-    }, signal);
+    let blendedResult: QlooResult<InsightsResponse>;
+    if (blendedEarlyPromise) {
+      const outcome = await blendedEarlyPromise;
+      if (!outcome.ok) throw outcome.error;
+      blendedResult = outcome.value;
+    } else {
+      blendedResult = await fetchInsights({
+        anchors: effectiveAnchors.map((a) => a.entityId),
+        city,
+        tagId: categoryTagId,
+        take: resultsPerQuery,
+        explainability: true,
+      }, signal);
+    }
     queriesUsed++;
 
     const entities = blendedResult.data.results.entities;
