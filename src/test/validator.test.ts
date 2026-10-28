@@ -413,4 +413,50 @@ describe("validateEntities — rejected entities do not poison dedup set", () =>
     assert.equal(results[0].categoryEvidence?.score, 1);
     assert.equal(results[0].categoryEvidence?.position, 1);
   });
+
+  it("does not falsely reject non-accommodation venues that only have number_of_rooms alongside non-hotel place categories", () => {
+    const restaurantWithRoomCount: InsightEntity = {
+      name: "Lokal",
+      entity_id: "538E64BA-A571-49F0-9B1B-58C7B76FBD26",
+      properties: {
+        is_closed: false,
+        hotel_class: null,
+        star_rating: null,
+        number_of_rooms: 55,
+        check_in_time: null,
+      },
+      location: { lat: 52.527, lon: 13.389 },
+      tags: [
+        {
+          id: "urn:tag:category:place:restaurant",
+          name: "Restaurant",
+          type: "urn:tag:category:place",
+        },
+        {
+          id: "urn:tag:category:place:german_restaurant",
+          name: "German restaurant",
+          type: "urn:tag:category:place",
+        },
+      ],
+    };
+
+    const uncategorizedApartmentWithRoomCount: InsightEntity = {
+      name: "Homaris East Side",
+      entity_id: "003DA6F7-3A9E-4F16-9ECF-7A9B4B8F5DDA",
+      properties: {
+        is_closed: false,
+        hotel_class: null,
+        star_rating: null,
+        number_of_rooms: 36,
+        check_in_time: null,
+      },
+      location: { lat: 52.51, lon: 13.43 },
+      tags: [],
+    };
+
+    assert.equal(validateEntity(restaurantWithRoomCount).verdict, "accepted");
+    const aptResult = validateEntity(uncategorizedApartmentWithRoomCount);
+    assert.equal(aptResult.verdict, "rejected");
+    assert.equal(aptResult.reason, "hotel_accommodation");
+  });
 });

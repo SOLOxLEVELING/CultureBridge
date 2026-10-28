@@ -1208,7 +1208,7 @@ describe("runAgent — fallback: Stage 1 alternative tag", () => {
   });
 
   it("uses exact tag ID returned by Qloo, never synthesizes one", async () => {
-    let capturedInputs: unknown[] = [];
+    const capturedInputs: { name: string; input: unknown }[] = [];
     const trackingDispatch = async (
       name: string, input: unknown, _deps?: ToolDeps, _signal?: AbortSignal,
     ): Promise<ToolExecutionOutcome> => {
@@ -1216,7 +1216,7 @@ describe("runAgent — fallback: Stage 1 alternative tag", () => {
       if (name === "find_tags") return FIND_TAGS_MUSIC;
       if (name === "discover_places") {
         const dp = input as { category_tag_id?: string };
-        if (dp.category_tag_id === "urn:tag:category:place:concert_hall") return (DISCOVER_EMPTY as any).result ? DISCOVER_EMPTY : DISCOVER_EMPTY;
+        if (dp.category_tag_id === "urn:tag:category:place:concert_hall") return DISCOVER_EMPTY;
         return makeDiscoverWithAccepted("FB-3", "Venue");
       }
       if (name === "finalize") {
@@ -1236,9 +1236,9 @@ describe("runAgent — fallback: Stage 1 alternative tag", () => {
 
     await runAgent(FALLBACK_INPUT, { converse, dispatchToolCall: trackingDispatch });
 
-    const discoverCalls = capturedInputs.filter((c: any) => c.name === "discover_places");
+    const discoverCalls = capturedInputs.filter((c) => c.name === "discover_places");
     assert.ok(discoverCalls.length >= 2);
-    const fallbackCall = discoverCalls[1] as any;
+    const fallbackCall = discoverCalls[1] as { name: string; input: { category_tag_id?: string } };
     assert.equal(fallbackCall.input.category_tag_id, "urn:tag:category:place:live_music_venue");
   });
 
@@ -1375,7 +1375,7 @@ describe("runAgent — fallback: Stage 3 broaden anchors", () => {
 
     await runAgent(multiAnchorInput, { converse, dispatchToolCall: trackingDispatch });
 
-    const dp = capturedBroadenInput as any;
+    const dp = capturedBroadenInput as { city: string; anchor_ids: string[]; anchor_names: string[] } | undefined;
     assert.ok(dp);
     assert.equal(dp.city, "Berlin");
     assert.deepEqual(dp.anchor_ids.sort(), ["PK-1", "R-1"]);
@@ -1483,12 +1483,12 @@ describe("runAgent — fallback: duplicate and loop prevention", () => {
   });
 
   it("does not repeat an identical exhausted query — fallback uses distinct parameters each stage", async () => {
-    let discoverInputs: unknown[] = [];
+    const discoverInputs: { anchor_ids: string[]; category_tag_id?: string }[] = [];
     const trackingDispatch = async (
       name: string, input: unknown, _deps?: ToolDeps, _signal?: AbortSignal,
     ): Promise<ToolExecutionOutcome> => {
       if (name === "discover_places") {
-        discoverInputs.push(input);
+        discoverInputs.push(input as { anchor_ids: string[]; category_tag_id?: string });
         return DISCOVER_EMPTY as ToolExecutionOutcome;
       }
       if (name === "find_tags") return FIND_TAGS_MUSIC;
@@ -1517,7 +1517,7 @@ describe("runAgent — fallback: duplicate and loop prevention", () => {
 
     await runAgent(multiInput, { converse, dispatchToolCall: trackingDispatch });
 
-    const paramSigs = discoverInputs.map((d: any) =>
+    const paramSigs = discoverInputs.map((d) =>
       JSON.stringify({ ids: [...d.anchor_ids].sort(), tag: d.category_tag_id ?? null }),
     );
     const uniqueParams = new Set(paramSigs);

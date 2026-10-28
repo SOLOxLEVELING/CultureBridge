@@ -529,8 +529,9 @@ async function executeFallbackChain(
     isTimedOut,
     emit,
     parentSignal,
+    toolCallLimit,
   } = params;
-  let { toolCallCount, toolCallLimit } = params;
+  let { toolCallCount } = params;
   let additionalToolCalls = 0;
   let bestResult: DiscoverPlacesResult | null = null;
 

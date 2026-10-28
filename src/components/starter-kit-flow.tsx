@@ -19,10 +19,9 @@ import {
   applyKitGenerationResponse,
   buildKitRequestPayload,
   buildPracticalDetailsView,
-  canGenerateKit,
   confirmAnchorCandidate,
   createInitialFlowState,
-  deriveFlowPhase,
+  deriveInterestStatusView,
   describeCategoryEvidence,
   extractMapMarkers,
   formatAnchorType,
@@ -84,19 +83,10 @@ export function StarterKitFlow() {
   const anchorsSectionRef = useRef<HTMLElement | null>(null);
 
   const baseId = useId();
-  const phase = deriveFlowPhase(state);
-  const isGenerating = state.generation.status === "loading";
-
-  const confirmedCount = state.anchors.filter(
-    (a) => a.status === "confirmed" && a.confirmedEntity !== null,
-  ).length;
-  const unsearchedAnchors = state.anchors.filter(
-    (a) => a.status === "unsearched",
-  );
-  const pendingAnchors = state.anchors.filter(
-    (a) => a.status !== "confirmed" || a.confirmedEntity === null,
-  );
-  const isReady = canGenerateKit(state);
+  const interestStatus = deriveInterestStatusView(state);
+  const isGenerating = interestStatus.isGenerating;
+  const confirmedCount = interestStatus.confirmedCount;
+  const isReady = interestStatus.isReady;
   const activePreset = getPresetById(state.selectedPresetId);
   const activeCityMeta = isTestedCity(state.city)
     ? CITY_META[state.city]
@@ -168,7 +158,7 @@ export function StarterKitFlow() {
 
   async function lookupAllUnsearched(): Promise<void> {
     const targets = stateRef.current.anchors.filter(
-      (a) => a.status === "unsearched" || a.status === "lookup_error",
+      (a) => a.status === "unsearched" && !a.isEditing,
     );
     if (targets.length === 0) return;
     setFormError(null);
@@ -721,35 +711,32 @@ export function StarterKitFlow() {
               aria-labelledby={`${baseId}-anchors-heading`}
               className="scroll-mt-8 space-y-4 lg:col-span-7 lg:col-start-6 lg:row-start-1 lg:row-span-2"
             >
-              <div className="flex flex-wrap items-center justify-between gap-3">
-                <div className="flex items-baseline gap-2.5">
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div>
                   <h2
                     id={`${baseId}-anchors-heading`}
                     className="text-base font-semibold text-foreground"
                   >
-                    Your interests
+                    {interestStatus.headingText}
                   </h2>
-                  <span className="text-xs text-cb-muted">
-                    {state.anchors.length} of {MAX_TRUSTED_ANCHORS}
-                  </span>
+                  <p className="mt-0.5 text-xs text-cb-muted">
+                    {interestStatus.capacityNoteText}
+                  </p>
                 </div>
 
                 <div className="flex flex-wrap items-center gap-2">
-                  {unsearchedAnchors.length > 0 && (
+                  {interestStatus.bulkActionLabel && (
                     <button
                       type="button"
                       disabled={isGenerating}
                       onClick={lookupAllUnsearched}
                       className="rounded-full bg-cb-accent px-4 py-2 text-xs font-semibold text-cb-accent-fg shadow-xs transition-colors hover:bg-cb-accent-hover focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-cb-accent disabled:cursor-not-allowed disabled:opacity-50"
                     >
-                      Find matches for{" "}
-                      {unsearchedAnchors.length === 1
-                        ? "1 interest"
-                        : `all ${unsearchedAnchors.length}`}
+                      {interestStatus.bulkActionLabel}
                     </button>
                   )}
 
-                  {state.anchors.length < MAX_TRUSTED_ANCHORS &&
+                  {interestStatus.canAddMore &&
                     !isAddRowOpen && (
                       <button
                         type="button"
@@ -834,8 +821,7 @@ export function StarterKitFlow() {
                   >
                     <div className="mb-3 flex items-center justify-between">
                       <span className="text-xs font-semibold text-foreground">
-                        Add to your interests ({state.anchors.length + 1} of{" "}
-                        {MAX_TRUSTED_ANCHORS})
+                        Add to your interests
                       </span>
                       {state.anchors.length > 0 && (
                         <button
@@ -924,34 +910,10 @@ export function StarterKitFlow() {
 
                 <div className="space-y-1.5" role="status" aria-live="polite">
                   <p className="text-sm font-semibold text-foreground sm:text-base">
-                    {isGenerating
-                      ? `Curating your ${state.city} guide…`
-                      : isReady
-                        ? `Ready to build your ${state.city} guide`
-                        : state.anchors.length === 0
-                          ? "Add at least one interest to get started"
-                          : `${confirmedCount} of ${state.anchors.length} ${
-                              state.anchors.length === 1
-                                ? "interest"
-                                : "interests"
-                            } confirmed`}
+                    {interestStatus.progressHeadline}
                   </p>
                   <p className="text-xs text-cb-muted leading-relaxed sm:text-sm">
-                    {isGenerating
-                      ? `Searching taste connections and screening venues in ${state.city}.`
-                      : isReady
-                        ? `Using ${state.anchors
-                            .map((a) => a.confirmedEntity?.name ?? a.query)
-                            .join(", ")}.`
-                        : phase === "waiting_for_confirmation"
-                          ? "Select the matching entry for each interest to continue."
-                          : unsearchedAnchors.length > 0
-                            ? `Find matches for ${
-                                pendingAnchors.length === 1
-                                  ? `"${pendingAnchors[0].query}"`
-                                  : `your remaining ${pendingAnchors.length} interests`
-                              }, then confirm each one.`
-                            : "Confirm or remove any unresolved interests to continue."}
+                    {interestStatus.progressDetail}
                   </p>
                 </div>
 

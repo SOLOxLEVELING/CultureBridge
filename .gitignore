@@ -12,6 +12,7 @@ out/
 
 # Raw Qloo test fixtures (large, may contain response data we don't want public)
 Plan/test/*.json
+Plan/*
 
 # OS
 .DS_Store

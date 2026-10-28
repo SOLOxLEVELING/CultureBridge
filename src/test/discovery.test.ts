@@ -336,4 +336,16 @@ describe("discover — budget enforcement", () => {
   it("default maxAnchorQueries is 5", () => {
     assert.equal(DEFAULT_MAX_ANCHOR_QUERIES, 5);
   });
+
+  it("orders accepted candidates by best query rank and corroborating source count so Anchor 1 lower ranks do not crowd out Anchor 2 top ranks", async () => {
+    const result = await runStandardDiscovery();
+    // ENT-B is rank 0 in anchor:ANCHOR-2 and present in all 3 queries (sources.length = 3)
+    // ENT-A is rank 0 in anchor:ANCHOR-1 and blended (sources.length = 2)
+    // ENT-C is rank 1 in anchor:ANCHOR-2 (sources.length = 1)
+    // ENT-D is rank 2 in blended (sources.length = 1)
+    assert.deepEqual(
+      result.accepted.map((c) => c.entityId),
+      ["ENT-B", "ENT-A", "ENT-C", "ENT-D"],
+    );
+  });
 });

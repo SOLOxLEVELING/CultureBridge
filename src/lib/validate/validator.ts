@@ -97,7 +97,6 @@ function hasHotelProperties(entity: InsightEntity): boolean {
   return (
     (p.hotel_class != null && p.hotel_class !== 0) ||
     (p.star_rating != null && p.star_rating !== 0) ||
-    (p.number_of_rooms != null && p.number_of_rooms !== 0) ||
     (p.check_in_time != null && p.check_in_time !== "")
   );
 }
@@ -105,7 +104,22 @@ function hasHotelProperties(entity: InsightEntity): boolean {
 function isAccommodation(entity: InsightEntity): boolean {
   if (hasHotelProperties(entity)) return true;
   const cats = getCategoryTags(entity);
-  return cats.some((t) => ACCOMMODATION_CATEGORIES.has(categorySlug(t.id)));
+  if (cats.some((t) => ACCOMMODATION_CATEGORIES.has(categorySlug(t.id)))) {
+    return true;
+  }
+  // Qloo populates number_of_rooms on some non-accommodation venues (e.g. restaurants,
+  // theatres, and historical landmarks) that have explicit non-accommodation category tags
+  // and no hotel_class, star_rating, or check_in_time. Treat number_of_rooms alone as an
+  // accommodation signal only when the entity has no place-category tags.
+  const p = entity.properties;
+  if (
+    p?.number_of_rooms != null &&
+    p.number_of_rooms !== 0 &&
+    cats.length === 0
+  ) {
+    return true;
+  }
+  return false;
 }
 
 function isTransit(entity: InsightEntity): boolean {

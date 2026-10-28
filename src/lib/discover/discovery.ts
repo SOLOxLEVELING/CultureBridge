@@ -231,6 +231,17 @@ export async function discover(
     }
   }
 
+  // Order accepted candidates by best query rank across single-anchor and blended
+  // queries (0-based ascending), breaking ties by number of corroborating queries
+  // (descending), then preserving original query order. This prevents the first
+  // anchor's lower-ranked results (e.g. rank 8–9) from crowding out top-ranked
+  // results (e.g. rank 0–1) from subsequent anchors or the blended query.
+  accepted.sort((a, b) => {
+    const rankDiff = bestSourceRank(a) - bestSourceRank(b);
+    if (rankDiff !== 0) return rankDiff;
+    return b.sources.length - a.sources.length;
+  });
+
   return {
     city,
     accepted,
@@ -239,6 +250,15 @@ export async function discover(
     failures,
     budget: { queriesUsed, queriesBudget, totalResults: candidateMap.size },
   };
+}
+
+function bestSourceRank(candidate: DiscoveryCandidate): number {
+  if (candidate.sources.length === 0) return Number.MAX_SAFE_INTEGER;
+  let best = Number.MAX_SAFE_INTEGER;
+  for (const src of candidate.sources) {
+    if (src.rank < best) best = src.rank;
+  }
+  return best;
 }
 
 function mergeCandidate(

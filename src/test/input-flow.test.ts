@@ -13,6 +13,7 @@ import {
   selectPreset,
   selectCity,
   addAnchor,
+  setAnchorEditing,
   updateAnchor,
   removeAnchor,
   startAnchorLookup,
@@ -22,6 +23,7 @@ import {
   unconfirmAnchor,
   canGenerateKit,
   buildKitRequestPayload,
+  deriveInterestStatusView,
   deriveFlowPhase,
   startKitGeneration,
   applyKitGenerationResponse,
@@ -1097,5 +1099,209 @@ describe("12. Backward compatibility — /api/discover and MUMBAI_NEWCOMER", () 
       ],
     );
     assert.equal(typeof discoverRoutePost, "function");
+  });
+});
+
+// ── 13. Interest-count wording and status consistency ─────────
+
+describe("13. Interest-count wording and confirmation status consistency", () => {
+  it("displays unambiguous added count, capacity note, bulk search label, and confirmation progress on initial 4-anchor preset", () => {
+    const state = createInitialFlowState("mumbai-newcomer", "Berlin");
+    const view = deriveInterestStatusView(state);
+
+    assert.equal(view.addedCount, 4);
+    assert.equal(view.maxAnchors, 5);
+    assert.equal(view.confirmedCount, 0);
+    assert.equal(view.headingText, "Your interests · 4 added");
+    assert.equal(view.capacityNoteText, "Up to 5 interests can be added.");
+    assert.equal(view.bulkActionLabel, "Find matches for all 4");
+    assert.equal(view.progressHeadline, "0 of 4 interests confirmed");
+    assert.equal(
+      view.progressDetail,
+      "Find matches for all 4 interests, then confirm each one.",
+    );
+    assert.equal(view.canAddMore, true);
+    assert.equal(view.isReady, false);
+  });
+
+  it("updates added count, confirmation progress, and capacity state when adding a fifth interest or removing an interest", () => {
+    let state = createInitialFlowState("mumbai-newcomer", "Berlin");
+
+    // Add a 5th interest
+    const added = addAnchor(state, "Björk", "urn:entity:artist");
+    assert.equal(added.ok, true);
+    state = added.state;
+
+    const fiveView = deriveInterestStatusView(state);
+    assert.equal(fiveView.addedCount, 5);
+    assert.equal(fiveView.headingText, "Your interests · 5 added");
+    assert.equal(fiveView.capacityNoteText, "Up to 5 interests can be added.");
+    assert.equal(fiveView.canAddMore, false);
+    assert.equal(fiveView.bulkActionLabel, "Find matches for all 5");
+    assert.equal(fiveView.progressHeadline, "0 of 5 interests confirmed");
+
+    // Remove two interests (down to 3)
+    state = removeAnchor(state, state.anchors[4].id).state;
+    state = removeAnchor(state, state.anchors[3].id).state;
+
+    const threeView = deriveInterestStatusView(state);
+    assert.equal(threeView.addedCount, 3);
+    assert.equal(threeView.headingText, "Your interests · 3 added");
+    assert.equal(threeView.canAddMore, true);
+    assert.equal(threeView.bulkActionLabel, "Find matches for all 3");
+    assert.equal(threeView.progressHeadline, "0 of 3 interests confirmed");
+  });
+
+  it("maintains consistent counts and status when searching, confirming, editing, or replacing an interest", async () => {
+    let state = createInitialFlowState("mumbai-newcomer", "Berlin");
+
+    // 1. Start candidate search for all 4 interests
+    for (const anchor of state.anchors) {
+      state = startAnchorLookup(state, anchor.id);
+    }
+    const searchingView = deriveInterestStatusView(state);
+    assert.equal(searchingView.headingText, "Your interests · 4 added");
+    assert.equal(searchingView.searchingCount, 4);
+    assert.equal(searchingView.bulkActionLabel, null);
+    assert.equal(searchingView.progressHeadline, "0 of 4 interests confirmed");
+    assert.equal(
+      searchingView.progressDetail,
+      "Looking up matches for 4 interests…",
+    );
+
+    // 2. Apply lookup results for all 4
+    for (const anchor of state.anchors) {
+      const { response } = await handleAnchorSearch(
+        { query: anchor.query, type: anchor.type },
+        "test-client",
+        { searchEntity: fakeSearchEntity },
+      );
+      state = applyAnchorLookupResult(state, anchor.id, response);
+    }
+    const candidatesView = deriveInterestStatusView(state);
+    assert.equal(candidatesView.headingText, "Your interests · 4 added");
+    assert.equal(candidatesView.bulkActionLabel, null);
+    assert.equal(candidatesView.progressHeadline, "0 of 4 interests confirmed");
+    assert.equal(
+      candidatesView.progressDetail,
+      "Select the matching entry for each interest to continue.",
+    );
+
+    // 3. Confirm 1st interest -> 1 of 4 confirmed
+    state = confirmAnchorCandidate(
+      state,
+      state.anchors[0].id,
+      "924C8504-4BD8-4615-AB2D-1C16880A8A62",
+    ).state;
+    const oneConfirmedView = deriveInterestStatusView(state);
+    assert.equal(oneConfirmedView.confirmedCount, 1);
+    assert.equal(
+      oneConfirmedView.progressHeadline,
+      "1 of 4 interests confirmed",
+    );
+
+    // 4. Confirm remaining 3 interests -> Ready to build
+    state = confirmAnchorCandidate(
+      state,
+      state.anchors[1].id,
+      "E5AE1F26-04CB-4CDD-BBA4-87FB6541F848",
+    ).state;
+    state = confirmAnchorCandidate(
+      state,
+      state.anchors[2].id,
+      "70CAE5BF-2F4C-445C-A3E5-4EDACFC3591C",
+    ).state;
+    state = confirmAnchorCandidate(
+      state,
+      state.anchors[3].id,
+      "74A44B01-5C99-4754-9585-F487D21C543D",
+    ).state;
+    const readyView = deriveInterestStatusView(state);
+    assert.equal(readyView.confirmedCount, 4);
+    assert.equal(readyView.isReady, true);
+    assert.equal(readyView.progressHeadline, "Ready to build your Berlin guide");
+    assert.equal(
+      readyView.progressDetail,
+      "Using Arijit Singh, The Office, Radiohead, Zara.",
+    );
+
+    // 5. Open edit on one confirmed interest -> no longer ready, confirmed count drops to 3 of 4
+    state = setAnchorEditing(state, state.anchors[3].id, true);
+    const editingView = deriveInterestStatusView(state);
+    assert.equal(editingView.headingText, "Your interests · 4 added");
+    assert.equal(editingView.confirmedCount, 3);
+    assert.equal(editingView.isReady, false);
+    assert.equal(editingView.progressHeadline, "3 of 4 interests confirmed");
+    assert.equal(
+      editingView.progressDetail,
+      'Save or cancel your edit for "Zara", then confirm each match to continue.',
+    );
+
+    // 6. Replace edited interest with a new query -> stays 3 of 4 confirmed and shows single-interest bulk action
+    state = updateAnchor(
+      state,
+      state.anchors[3].id,
+      "Björk",
+      "urn:entity:artist",
+    ).state;
+    const replacedView = deriveInterestStatusView(state);
+    assert.equal(replacedView.headingText, "Your interests · 4 added");
+    assert.equal(replacedView.confirmedCount, 3);
+    assert.equal(replacedView.unsearchedCount, 1);
+    assert.equal(replacedView.bulkActionLabel, "Find matches for 1 interest");
+    assert.equal(replacedView.progressHeadline, "3 of 4 interests confirmed");
+    assert.equal(
+      replacedView.progressDetail,
+      'Find matches for "Björk", then confirm each one.',
+    );
+  });
+
+  it("handles custom blank list and partially complete list states consistently", () => {
+    let state = selectPreset(
+      createInitialFlowState("mumbai-newcomer", "Berlin"),
+      "custom",
+    ).state;
+
+    const emptyView = deriveInterestStatusView(state);
+    assert.equal(emptyView.addedCount, 0);
+    assert.equal(emptyView.headingText, "Your interests · 0 added");
+    assert.equal(emptyView.capacityNoteText, "Up to 5 interests can be added.");
+    assert.equal(emptyView.bulkActionLabel, null);
+    assert.equal(
+      emptyView.progressHeadline,
+      "Add at least one interest to get started",
+    );
+
+    // Add 2 custom interests, look up 1, leave 1 unsearched
+    state = addAnchor(state, "Radiohead", "urn:entity:artist").state;
+    state = addAnchor(state, "Zara", "urn:entity:brand").state;
+    state = applyAnchorLookupResult(state, state.anchors[0].id, {
+      status: "matches",
+      resolutionStatus: "resolved",
+      query: "Radiohead",
+      requestedType: "urn:entity:artist",
+      candidates: [
+        {
+          entityId: "70CAE5BF-2F4C-445C-A3E5-4EDACFC3591C",
+          name: "Radiohead",
+          types: ["urn:entity:artist"],
+        },
+      ],
+    });
+
+    const partialUnconfirmed = deriveInterestStatusView(state);
+    assert.equal(partialUnconfirmed.headingText, "Your interests · 2 added");
+    assert.equal(
+      partialUnconfirmed.bulkActionLabel,
+      "Find matches for 1 interest",
+    );
+    assert.equal(
+      partialUnconfirmed.progressHeadline,
+      "0 of 2 interests confirmed",
+    );
+    assert.equal(
+      partialUnconfirmed.progressDetail,
+      'Find matches for "Zara" and confirm each match to continue.',
+    );
   });
 });

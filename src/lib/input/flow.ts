@@ -779,6 +779,153 @@ export function buildKitRequestPayload(state: FlowState): KitRequest | null {
 
 // ── Flow Phase Derivation ────────────────────────────────────
 
+export interface InterestStatusView {
+  addedCount: number;
+  maxAnchors: number;
+  confirmedCount: number;
+  unsearchedCount: number;
+  searchingCount: number;
+  candidatesCount: number;
+  editingCount: number;
+  unresolvedIssueCount: number;
+  canAddMore: boolean;
+  isReady: boolean;
+  isGenerating: boolean;
+  headingText: string;
+  capacityNoteText: string;
+  bulkActionLabel: string | null;
+  progressHeadline: string;
+  progressDetail: string;
+}
+
+export function deriveInterestStatusView(state: FlowState): InterestStatusView {
+  const addedCount = state.anchors.length;
+  const maxAnchors = MAX_TRUSTED_ANCHORS;
+  const isGenerating = state.generation.status === "loading";
+  const isReady = canGenerateKit(state);
+
+  const confirmedAnchors = state.anchors.filter(
+    (a) =>
+      a.status === "confirmed" &&
+      a.confirmedEntity !== null &&
+      !a.isEditing &&
+      a.confirmedEntity.types.includes(a.type),
+  );
+  const confirmedCount = confirmedAnchors.length;
+
+  const editingAnchors = state.anchors.filter((a) => a.isEditing);
+  const editingCount = editingAnchors.length;
+
+  const unsearchedAnchors = state.anchors.filter(
+    (a) => a.status === "unsearched" && !a.isEditing,
+  );
+  const unsearchedCount = unsearchedAnchors.length;
+
+  const searchingAnchors = state.anchors.filter(
+    (a) => a.status === "searching" && !a.isEditing,
+  );
+  const searchingCount = searchingAnchors.length;
+
+  const candidatesAnchors = state.anchors.filter(
+    (a) => a.status === "candidates" && !a.isEditing,
+  );
+  const candidatesCount = candidatesAnchors.length;
+
+  const issueAnchors = state.anchors.filter(
+    (a) =>
+      (a.status === "no_matches" || a.status === "lookup_error") &&
+      !a.isEditing,
+  );
+  const unresolvedIssueCount = issueAnchors.length;
+
+  const canAddMore = addedCount < maxAnchors;
+  const headingText = `Your interests · ${addedCount} added`;
+  const capacityNoteText = `Up to ${maxAnchors} interests can be added.`;
+
+  const bulkActionLabel =
+    unsearchedCount === 0
+      ? null
+      : unsearchedCount === 1
+        ? "Find matches for 1 interest"
+        : `Find matches for all ${unsearchedCount}`;
+
+  let progressHeadline: string;
+  if (isGenerating) {
+    progressHeadline = `Curating your ${state.city} guide…`;
+  } else if (isReady) {
+    progressHeadline = `Ready to build your ${state.city} guide`;
+  } else if (addedCount === 0) {
+    progressHeadline = "Add at least one interest to get started";
+  } else {
+    progressHeadline = `${confirmedCount} of ${addedCount} ${
+      addedCount === 1 ? "interest" : "interests"
+    } confirmed`;
+  }
+
+  let progressDetail: string;
+  if (isGenerating) {
+    progressDetail = `Searching taste connections and screening venues in ${state.city}.`;
+  } else if (isReady) {
+    progressDetail = `Using ${state.anchors
+      .map((a) => a.confirmedEntity?.name ?? a.query)
+      .join(", ")}.`;
+  } else if (addedCount === 0) {
+    progressDetail = `Add up to ${maxAnchors} artists, shows, movies, brands, or people to build your guide.`;
+  } else if (editingCount > 0) {
+    progressDetail = `Save or cancel your edit${
+      editingCount === 1 ? ` for "${editingAnchors[0].query}"` : ""
+    }, then confirm each match to continue.`;
+  } else if (searchingCount > 0) {
+    progressDetail =
+      searchingCount === 1
+        ? `Looking up matches for "${searchingAnchors[0].query}"…`
+        : `Looking up matches for ${searchingCount} interests…`;
+  } else if (unresolvedIssueCount > 0) {
+    progressDetail = `Edit, retry, or remove ${
+      unresolvedIssueCount === 1
+        ? `"${issueAnchors[0].query}"`
+        : "unresolved interests"
+    } to continue.`;
+  } else if (unsearchedCount > 0 && candidatesCount > 0) {
+    progressDetail = `Find matches for ${
+      unsearchedCount === 1
+        ? `"${unsearchedAnchors[0].query}"`
+        : `your remaining ${unsearchedCount} unsearched interests`
+    } and confirm each match to continue.`;
+  } else if (unsearchedCount > 0) {
+    progressDetail = `Find matches for ${
+      unsearchedCount === 1
+        ? `"${unsearchedAnchors[0].query}"`
+        : confirmedCount > 0
+          ? `your remaining ${unsearchedCount} interests`
+          : `all ${unsearchedCount} interests`
+    }, then confirm each one.`;
+  } else if (candidatesCount > 0) {
+    progressDetail = "Select the matching entry for each interest to continue.";
+  } else {
+    progressDetail = "Confirm or remove any unresolved interests to continue.";
+  }
+
+  return {
+    addedCount,
+    maxAnchors,
+    confirmedCount,
+    unsearchedCount,
+    searchingCount,
+    candidatesCount,
+    editingCount,
+    unresolvedIssueCount,
+    canAddMore,
+    isReady,
+    isGenerating,
+    headingText,
+    capacityNoteText,
+    bulkActionLabel,
+    progressHeadline,
+    progressDetail,
+  };
+}
+
 export function deriveFlowPhase(state: FlowState): FlowPhase {
   if (state.generation.status === "loading") {
     return "generating";
