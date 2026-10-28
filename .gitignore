@@ -1,25 +1,38 @@
 # Dependencies
 node_modules/
 
-# Next.js
+# Next.js & TypeScript
 .next/
 out/
+build/
+*.tsbuildinfo
 
 # Environment (real keys)
 .env
 .env.local
 .env*.local
+.env.*
+!.env.example
 
-# Raw Qloo test fixtures (large, may contain response data we don't want public)
+# Raw Qloo test fixtures, local plans, and diagnostic dumps
+Plan/
 Plan/test/*.json
 Plan/*
+qloo-test*-results.json
 
-# OS
+# OS, logs & local tooling
 .DS_Store
+**/.DS_Store
 Thumbs.db
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
 .vercel
+.vercel/
+.claude/
 
-# Playwright
+# Playwright & test artifacts
 .playwright-mcp/
 playwright-report/
 test-results/
+coverage/
