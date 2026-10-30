@@ -2,10 +2,12 @@
 
 CultureBridge is a web application that helps newcomers and visitors explore places in a destination city (**Berlin** or **Toronto**) using the cultural interests they already know—artists, TV shows, movies, brands, and public figures—powered by Qloo's taste graph and an Amazon Bedrock tool-use agent.
 
-Rather than relying on a language model to invent venue names or claim unverified cultural relationships, CultureBridge separates orchestration from verification:
+**Live Demo:** [https://culturebridge-theta.vercel.app](https://culturebridge-theta.vercel.app)
+
+Rather than relying on a language model to invent venue names or claim unverified cultural relationships, CultureBridge separates orchestration from deterministic screening and provenance checks:
 - **Qloo's API** (`/search`, `/v2/insights`, `/v2/tags`) supplies entity resolution, cross-domain place discovery, and category metadata.
 - **Amazon Bedrock** (via the Converse tool-use API) orchestrates anchor resolution, place discovery, tag lookup, and finalization within strict operational budgets.
-- **Deterministic TypeScript code** validates every candidate place, filters out accommodations and transit hubs, scores category-tag evidence, assigns provenance-based labels, verifies explanation text against grounded facts, and falls back to a deterministic discovery pipeline if Bedrock times out or is unavailable.
+- **Deterministic TypeScript code** screens every candidate place against configured rules (`validateEntity`), filters out flagged accommodations and transit hubs, scores category-tag evidence when a category filter is requested, assigns provenance-based labels, runs deterministic, rule-based explanation checks with safe template fallback, and falls back to a deterministic discovery pipeline if Bedrock times out or is unavailable.
 
 ---
 
@@ -46,7 +48,7 @@ Preset definitions store only `{ query, type }` seeds—never pre-baked Qloo ent
 3. **Generate the city guide**  
    Submitting confirmed interests sends a request to `POST /api/kit`. The server re-verifies every client-submitted `entityId` against Qloo `/search` before running discovery.
 4. **Explore places, interactive map, and search-process trace**  
-   - **Categorized recommendations**: Filter recommendations by category, inspect provenance and category-evidence notes, and view available venue details (address, neighborhood, website, phone, price level).
+   - **Categorized recommendations**: Filter recommendations by Qloo place category, inspect query provenance (`How this place connected`—showing single-anchor ranks, combined-query attribution, or category-match provenance when a category filter was evaluated), and view available Qloo catalog details (address, neighborhood, website, phone, price level, additional categories, and supporting tags).
    - **Interactive city map**: Mappable places (with valid latitude and longitude) are plotted as numbered pins on a **Leaflet** map (`src/components/results-map.tsx`) with OpenStreetMap / CARTO tiles, synchronized with the recommendation list. Valid places lacking coordinates remain in the list and are marked as non-mappable.
    - **Search-process trace drawer**: A collapsible **"How these suggestions were found"** drawer (`src/components/agent-trace-drawer.tsx`) displays the step-by-step discovery trace, cache status (`Live search`, `Cached (24h)`, or `Live + cached`), fallback stages, and candidate screening counts (accepted, held for review, and rejected by reason).
 
@@ -82,9 +84,9 @@ Client UI (StarterKitFlow)
   - Wraps `https://hackathon.api.qloo.com` endpoints: `/search`, `/v2/insights` (`filter.type=urn:entity:place`, `filter.location.query`, `signal.interests.entities`, `filter.tags`, `feature.explainability=true`), and `/v2/tags` (`filter.query`).
   - Enforces a 10-second per-request timeout, exponential backoff retries (`MAX_RETRIES = 2` on HTTP 429 and 5xx), `AbortSignal` cancellation propagation, a 24-hour in-memory cache, and Zod schema validation (`SearchResponseSchema`, `InsightsResponseSchema`, `TagsResponseSchema`).
 - **`src/lib/validate/` — Deterministic Candidate Screening**
-  - Automatically evaluates every place returned by Qloo `/v2/insights`:
-    - **Rejects**: missing names (`missing_name`), closed venues (`properties.is_closed === true` → `closed`), hotels and accommodations (`hotel_class`, `star_rating`, `check_in_time`, accommodation category tags, or `number_of_rooms` when no place-category tags exist → `hotel_accommodation`), transit stations and airports (`transit_airport`), and duplicates by `entity_id` or normalized name within 200 meters (`duplicate`).
-    - **Category-tag evidence scoring**: When a category filter is requested, scores `urn:tag:category:place:*` tags (`+2` primary category tag, `+1` second, `0` later, `-1` absent) and checks per-category conflict sets (`CATEGORY_CONFLICTS`, e.g., rejecting hair salons or wine stores tagged secondarily under `record_store` or `book_store` as `category_conflict`, and holding score `<= 0` candidates in `review` as `weak_category_evidence`).
+  - Evaluates candidate places returned by Qloo `/v2/insights`:
+    - **Per-entity screening (`validateEntity`)**: Rejects missing names (`missing_name`), closed venues (`properties.is_closed === true` → `closed`), hotels and accommodations (`hotel_class`, `star_rating`, `check_in_time`, accommodation category tags, or `number_of_rooms` when no place-category tags exist → `hotel_accommodation`), and transit stations and airports (`transit_airport`). In `discover()`, repeated `entity_id` results across single-anchor and blended queries are merged via `candidateMap` before `validateEntity()` runs. *(Note: `src/lib/validate/validator.ts` also exports a standalone batch helper, `validateEntities()`, which adds `duplicate` rejection by `entity_id` or normalized name within 200 meters and is covered by unit tests, but the live `/api/kit` discovery path calls `validateEntity()` per unique `entity_id` inside `discover()` rather than `validateEntities()`.)*
+    - **Category-tag evidence scoring (when a category filter is requested)**: When `requestedCategory` (`category_tag_id`) is passed to `validateEntity()`, `scoreCategoryEvidence()` scores `urn:tag:category:place:*` tags (`+2` primary category tag, `+1` second, `0` later, `-1` absent) and checks per-category conflict sets (`CATEGORY_CONFLICTS`, e.g., rejecting hair salons or wine stores tagged secondarily under `record_store` or `book_store` as `category_conflict`, and holding score `<= 0` candidates in `review` as `weak_category_evidence`). Broad unfiltered taste queries do not pass `requestedCategory`, so `categoryEvidence` is `null` and categories are read directly from Qloo's `urn:tag:category:place:*` tags.
     - **Mappability**: Checks coordinate presence and range separately (`mappable` boolean) so valid venues without coordinates are not discarded from the list.
 - **`src/lib/discover/` & `src/lib/recommend/` — Provenance Tracking & Deterministic Labeling**
   - `discover()` executes individual **single-anchor** `/v2/insights` queries (up to 5 anchors) alongside a **blended** multi-anchor query, recording every query source and 0-based rank per candidate and ordering accepted places by best source rank and corroborating query count.
@@ -99,9 +101,9 @@ Client UI (StarterKitFlow)
     1. `alt_tag`: Queries `/v2/tags` for alternative `urn:tag:category:place:*` tags and retries discovery.
     2. `drop_tag`: Drops the category tag filter and runs an unfiltered query with the same anchors.
     3. `broaden`: Broadens the unfiltered query across all confirmed anchors.
-- **`src/lib/output/` — Output Verification & Public Trace Projection**
+- **`src/lib/output/` — Output Schema Validation, Rule-Based Explanation Checks & Public Trace Projection**
   - `buildStructuredOutput()` builds recommendations from trusted records only, generates deterministic summary text, and validates the response against `StructuredOutputSchema`.
-  - `verifyExplanation()` blocks fabricated percentages (`\d+%`), confidence/probability claims, unsupported single-anchor claims, and opening-hours claims when venue evidence is absent, falling back to deterministic templates if any check fails.
+  - `verifyExplanation()` performs deterministic, rule-based pattern checks on explanation text—blocking fabricated percentages (`\d+%`), confidence/probability claims, unsupported single-anchor claims, and opening-hours claims when venue evidence is absent—and falls back to deterministic templates if any check fails (it does not perform independent third-party factual verification).
   - `projectPublicTrace()` produces an allowlisted step-by-step trace for the UI while stripping API keys, internal URLs, raw upstream error payloads, and unverified model text.
 
 ---
@@ -114,8 +116,8 @@ Client UI (StarterKitFlow)
 - Bedrock Converse tool-calling agent with hard limits (12 tool calls, 25 non-cached Qloo outbound calls, 10 Converse turns, per-operation and request-wide deadlines).
 - Automatic graceful degradation to deterministic Qloo discovery (`runFallback`) when Bedrock fails, times out, or is not configured.
 - Multi-stage category fallback (`alt_tag` → `drop_tag` → `broaden`).
-- Deterministic candidate validation (closed-venue, accommodation, transit/airport, category-conflict, and 200m duplicate filtering).
-- Deterministic recommendation labeling (`Taste-graph result`, `Useful place`, `Exploratory`) and explanation verification.
+- Deterministic candidate screening (`validateEntity`) for closed venues, flagged accommodations, transit/airports, and—when a category tag is explicitly requested—category-conflict and category-evidence scoring, plus `entity_id` deduplication across queries in `discover()`. *(A standalone batch helper `validateEntities()` with 200m name-proximity deduplication is also implemented and unit-tested in `src/lib/validate/validator.ts`, though not invoked in the live `/api/kit` path.)*
+- Deterministic recommendation labeling (`Taste-graph result`, `Useful place`, `Exploratory`) and rule-based explanation checks with safe template fallback.
 - Category filter pills, venue detail cards, interactive Leaflet + OpenStreetMap/CARTO map with synchronized selection, collapsible search-process trace drawer, and light/dark theme toggle.
 - Offline unit test suite (399 tests across 135 suites) backed by curated Qloo fixtures (`src/test/fixtures/`), plus opt-in live smoke tests for Qloo and Bedrock.
 
@@ -204,7 +206,11 @@ Configure these variables in `.env` or `.env.local` for local development, and i
 - **Catalog metadata & operating status**:  
   CultureBridge relies on Qloo's catalog metadata for addresses, neighborhoods, websites, phone numbers, coordinates, and `is_closed` flags. Qloo's catalog does not provide verified live opening hours or real-time operating status for every venue, and missing fields are explicitly displayed as unavailable rather than guessed by the model.
 - **Category-conflict screening scope**:  
-  Deterministic category-conflict scoring (`scoreCategoryEvidence`) runs when a category tag is explicitly evaluated. Broad unfiltered taste queries classify categories from Qloo's returned `urn:tag:category:place:*` tags without independent third-party verification of every tag in Qloo's catalog.
+  Deterministic category-conflict scoring (`scoreCategoryEvidence`) runs only when a category tag is explicitly requested (`category_tag_id`). Broad unfiltered taste queries do not evaluate `scoreCategoryEvidence()` (`categoryEvidence: null`) and instead display categories directly from Qloo's returned `urn:tag:category:place:*` tags without independent third-party verification of every tag in Qloo's catalog.
+- **Deduplication scope in `/api/kit`**:  
+  The live discovery path (`discover()` in `src/lib/discover/discovery.ts`) deduplicates candidates across single-anchor and blended queries by `entity_id` and screens each unique candidate via `validateEntity()`. The 200-meter normalized-name proximity deduplication (`validateEntities()` in `src/lib/validate/validator.ts`) is an exported, unit-tested batch helper that is not called in the live `/api/kit` request flow.
+- **Rule-based explanation checks**:  
+  `verifyExplanation()` enforces deterministic pattern rules (blocking percentages, confidence claims, unsupported single-anchor attribution, and opening-hours claims when venue contact/address evidence is absent) and falls back to a deterministic template if violated; it is not a general-purpose fact-checker.
 - **Instance-local caching and rate limiting**:  
   Response caching (24-hour TTL) and per-IP sliding-window rate limiters (`10 req/min` on `/api/kit`, `30 req/min` on `/api/anchors/search`) are stored in-memory per server instance rather than in a distributed store.
 
